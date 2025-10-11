@@ -115,3 +115,6 @@ venv.bak/
 # Logs and JSON files (user request)
 *.log
 *.json
+
+# Local environment overrides
+.env
