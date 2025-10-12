@@ -189,6 +189,7 @@ def _to_dataframe(payload) -> pd.DataFrame:
 
     df = _denormalize_frame(df)
     df = _lowercase_columns(df)
+    df = _apply_aliases(df)
     return df
 
 
@@ -217,6 +218,41 @@ def _denormalize_frame(df: pd.DataFrame, max_depth: int = 3) -> pd.DataFrame:
             expanded.columns = [f"{col}.{c}" for c in expanded.columns]
             current = current.drop(columns=[col]).join(expanded)
     return current
+
+
+def _apply_aliases(df: pd.DataFrame) -> pd.DataFrame:
+    aliases = {
+        "o": "open",
+        "openprice": "open",
+        "open_price": "open",
+        "openvalue": "open",
+        "open_val": "open",
+        "op": "open",
+        "h": "high",
+        "highprice": "high",
+        "high_price": "high",
+        "highvalue": "high",
+        "l": "low",
+        "lowprice": "low",
+        "low_price": "low",
+        "lowvalue": "low",
+        "c": "close",
+        "closeprice": "close",
+        "close_price": "close",
+        "closevalue": "close",
+        "cp": "close",
+        "v": "volume",
+        "vol": "volume",
+        "volume_value": "volume",
+        "volume_traded": "volume",
+    }
+    rename_map = {}
+    for col in df.columns:
+        if col in aliases and aliases[col] not in df.columns:
+            rename_map[col] = aliases[col]
+    if rename_map:
+        df = df.rename(columns=rename_map)
+    return df
 
 
 def list_available_series(target_tz: Optional[str] = "Asia/Kolkata") -> list[dict]:
@@ -347,6 +383,16 @@ def fetch_history_to_tsdb(
         end_date=fetch_end_str,
     )
     df = _to_dataframe(raw)
+    if {"error", "message"}.issubset(df.columns):
+        raise RuntimeError(f"OpenAlgo error: {df.iloc[0]['message']}")
+    if "error" in df.columns and "message" not in df.columns:
+        raise RuntimeError(f"OpenAlgo error response: {df.iloc[0]['error']}")
+    if "status" in df.columns and df["status"].iloc[0] not in ("ok", "success"):
+        detail = df["status"].iloc[0]
+        if "message" in df.columns:
+            detail = f"{detail}: {df['message'].iloc[0]}"
+        raise RuntimeError(f"OpenAlgo status {detail}")
+
     if df.empty:
         print(f"⚠️ OpenAlgo returned no rows for {symbol} {exchange} {interval}.")
         return 0
