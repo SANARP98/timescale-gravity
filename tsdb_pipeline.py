@@ -6,6 +6,7 @@ TimescaleDB ingest + reader for OpenAlgo OHLCV bars
 - Fetches history from OpenAlgo
 - Upserts into TimescaleDB (hypertable ohlcv)
 - Exposes a reader to get a pandas DataFrame for backtests
+- Automatically fetches both PE and CE for option symbols
 """
 
 import os
@@ -18,6 +19,8 @@ from dotenv import load_dotenv
 
 import psycopg2
 import psycopg2.extras as extras
+
+from symbol_utils import get_option_pair, is_option_symbol
 
 
 # ---------- ENV ----------
@@ -256,9 +259,21 @@ def _apply_aliases(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def list_available_series(target_tz: Optional[str] = "Asia/Kolkata") -> list[dict]:
+def list_available_series(target_tz: Optional[str] = "Asia/Kolkata", sort_order: str = "desc") -> list[dict]:
+    """
+    List all available series in TimescaleDB.
+
+    Args:
+        target_tz: Target timezone for timestamps (default: Asia/Kolkata)
+        sort_order: Sort order for results - "asc" or "desc" (default: desc)
+
+    Returns:
+        List of series metadata dictionaries
+    """
+    order = "ASC" if sort_order.lower() == "asc" else "DESC"
+
     with get_conn() as conn:
-        sql = """
+        sql = f"""
             SELECT
                 symbol,
                 exchange,
@@ -268,7 +283,7 @@ def list_available_series(target_tz: Optional[str] = "Asia/Kolkata") -> list[dic
                 COUNT(*)::bigint AS rows_count
             FROM ohlcv
             GROUP BY symbol, exchange, interval
-            ORDER BY last_ts DESC;
+            ORDER BY symbol {order}, exchange {order}, interval {order};
         """
         df = pd.read_sql(sql, conn, parse_dates=["first_ts", "last_ts"])
 
@@ -295,16 +310,44 @@ def list_available_series(target_tz: Optional[str] = "Asia/Kolkata") -> list[dic
     ]
 
 
-def fetch_history_to_tsdb(
+def delete_series(symbol: str, exchange: str, interval: str) -> int:
+    """
+    Delete all data for a specific series from TimescaleDB.
+
+    Args:
+        symbol: The symbol to delete
+        exchange: The exchange
+        interval: The interval
+
+    Returns:
+        Number of rows deleted
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM ohlcv
+            WHERE symbol = %(symbol)s
+              AND exchange = %(exchange)s
+              AND interval = %(interval)s
+            """,
+            {"symbol": symbol, "exchange": exchange, "interval": interval}
+        )
+        deleted = cur.rowcount
+        conn.commit()
+
+    print(f"🗑️  Deleted {deleted} rows for {symbol} {exchange} {interval}")
+    return deleted
+
+
+def _fetch_single_symbol(
     symbol: str,
     exchange: str,
     interval: str,
     start_date: str,
     end_date: str,
     also_save_csv: Optional[str] = None,
-):
-    """Pull from OpenAlgo → upsert into TimescaleDB"""
-    ensure_schema()
+) -> int:
+    """Internal function to fetch a single symbol"""
 
     def _coerce_ist(value: str, field_name: str) -> pd.Timestamp:
         if not value:
@@ -452,6 +495,56 @@ def fetch_history_to_tsdb(
         )
 
     return total_rows
+
+
+def fetch_history_to_tsdb(
+    symbol: str,
+    exchange: str,
+    interval: str,
+    start_date: str,
+    end_date: str,
+    also_save_csv: Optional[str] = None,
+) -> int:
+    """
+    Pull from OpenAlgo → upsert into TimescaleDB.
+
+    If the symbol is an option (ends with PE or CE), automatically fetches
+    both PE and CE variants.
+
+    Returns: total rows upserted across all symbols
+    """
+    ensure_schema()
+
+    # Check if this is an option symbol
+    if is_option_symbol(symbol):
+        pe_symbol, ce_symbol = get_option_pair(symbol)
+        print(f"📊 Detected option symbol. Will fetch both {pe_symbol} and {ce_symbol}")
+
+        total_rows = 0
+
+        # Fetch PE
+        if pe_symbol:
+            print(f"\n🔵 Fetching PE: {pe_symbol}")
+            csv_pe = f"{pe_symbol}_{also_save_csv}" if also_save_csv else None
+            rows_pe = _fetch_single_symbol(
+                pe_symbol, exchange, interval, start_date, end_date, csv_pe
+            )
+            total_rows += rows_pe
+
+        # Fetch CE
+        if ce_symbol:
+            print(f"\n🔴 Fetching CE: {ce_symbol}")
+            csv_ce = f"{ce_symbol}_{also_save_csv}" if also_save_csv else None
+            rows_ce = _fetch_single_symbol(
+                ce_symbol, exchange, interval, start_date, end_date, csv_ce
+            )
+            total_rows += rows_ce
+
+        print(f"\n✅ Total upserted: {total_rows} rows ({pe_symbol} + {ce_symbol})")
+        return total_rows
+    else:
+        # Regular symbol, fetch as usual
+        return _fetch_single_symbol(symbol, exchange, interval, start_date, end_date, also_save_csv)
 
 
 def read_ohlcv_from_tsdb(

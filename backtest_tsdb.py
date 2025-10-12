@@ -4,6 +4,7 @@
 """
 Scalp-with-Trend Backtest (multi-bar hold; intraday square-off)
 — TimescaleDB-powered data reader —
+— Supports running PE, CE, or Both option types simultaneously —
 """
 
 import argparse
@@ -14,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from tsdb_pipeline import read_ohlcv_from_tsdb  # <<<< read from DB
+from symbol_utils import get_option_pair, is_option_symbol
 
 # ==================== CONFIGURATION (defaults; can be overridden via CLI) ====================
 
@@ -45,6 +47,7 @@ CONFIRM_TREND_AT_ENTRY = True
 TRADE_DIRECTION = "both"
 ENABLE_EOD_SQUARE_OFF = True
 SQUARE_OFF_TIME = time(15, 25)
+OPTION_SELECTION = "both"  # "pe" | "ce" | "both"
 
 # ====== Globals (populated after load) ======
 df = pd.DataFrame()
@@ -338,7 +341,7 @@ def apply_config(cfg: Optional[Dict[str, Any]]) -> None:
     global TARGET_POINTS, STOPLOSS_POINTS, EMA_FAST, EMA_SLOW
     global ATR_WINDOW, ATR_MIN_POINTS, SESSION_WINDOWS, DAILY_LOSS_CAP
     global EXIT_BAR_PATH, BROKERAGE_PER_TRADE, SLIPPAGE_POINTS, CONFIRM_TREND_AT_ENTRY, df
-    global ENABLE_EOD_SQUARE_OFF, SQUARE_OFF_TIME, TRADE_DIRECTION
+    global ENABLE_EOD_SQUARE_OFF, SQUARE_OFF_TIME, TRADE_DIRECTION, OPTION_SELECTION
 
     if not cfg:
         return
@@ -364,6 +367,7 @@ def apply_config(cfg: Optional[Dict[str, Any]]) -> None:
     CONFIRM_TREND_AT_ENTRY = cfg.get("confirm_trend_at_entry", CONFIRM_TREND_AT_ENTRY)
     ENABLE_EOD_SQUARE_OFF = cfg.get("enable_eod_square_off", ENABLE_EOD_SQUARE_OFF)
     TRADE_DIRECTION = cfg.get("trade_direction", TRADE_DIRECTION)
+    OPTION_SELECTION = cfg.get("option_selection", OPTION_SELECTION)
 
     if "square_off_time" in cfg and cfg["square_off_time"]:
         hh, mm = map(int, str(cfg["square_off_time"]).split(":"))
@@ -466,42 +470,65 @@ def daily_breakdown(trades: pd.DataFrame) -> List[Dict[str, Any]]:
 def run_backtest_from_config(cfg: Optional[Dict[str, Any]] = None, write_csv: bool = False) -> Dict[str, Any]:
     apply_config(cfg)
 
-    data_slice = load_data_from_db(SYMBOL, EXCHANGE, INTERVAL, DATE_FROM, DATE_TO)
-    if data_slice.empty:
+    # Determine which symbols to backtest
+    symbols_to_test = []
+    if is_option_symbol(SYMBOL):
+        pe_symbol, ce_symbol = get_option_pair(SYMBOL)
+        if OPTION_SELECTION == "pe":
+            symbols_to_test = [pe_symbol]
+        elif OPTION_SELECTION == "ce":
+            symbols_to_test = [ce_symbol]
+        else:  # "both"
+            symbols_to_test = [pe_symbol, ce_symbol]
+    else:
+        # Not an option symbol, run as single symbol
+        symbols_to_test = [SYMBOL]
+
+    # Run backtest for each symbol
+    all_trades = []
+    combined_data = {}
+
+    for sym in symbols_to_test:
+        data_slice = load_data_from_db(sym, EXCHANGE, INTERVAL, DATE_FROM, DATE_TO)
+        if data_slice.empty:
+            print(f"⚠️ No data for {sym}")
+            continue
+
+        data_slice = compute_indicators(data_slice)
+        globals()["df"] = data_slice
+        combined_data[sym] = data_slice
+
+        trades = run_backtest()
+        if not trades.empty:
+            trades["symbol"] = sym  # Tag trades with symbol
+            all_trades.append(trades)
+
+    # Combine all trades
+    if not all_trades:
         return {
-            "data": data_slice,
+            "data": combined_data,
             "trades": pd.DataFrame(),
             "summary": None,
             "output_csv": None,
             "daily_stats": [],
-            "message": "⚠️ No data returned from TimescaleDB for the requested slice.",
-        }
-    data_slice = compute_indicators(data_slice)
-
-    globals()["df"] = data_slice
-
-    trades = run_backtest()
-    if trades.empty:
-        return {
-            "data": data_slice,
-            "trades": trades,
-            "summary": None,
-            "output_csv": None,
-            "daily_stats": [],
-            "message": "⚠️  No trades generated.",
+            "message": "⚠️  No trades generated for any symbol.",
         }
 
-    summary = summarize_trades(trades.copy())
-    daily_stats = daily_breakdown(trades.copy())
+    combined_trades = pd.concat(all_trades, ignore_index=True)
+    combined_trades = combined_trades.sort_values("entry_time").reset_index(drop=True)
+
+    summary = summarize_trades(combined_trades.copy())
+    daily_stats = daily_breakdown(combined_trades.copy())
 
     out_csv = None
     if write_csv:
-        out_csv = f"scalp_with_trend_results_{SYMBOL}_{INTERVAL}.csv"
-        trades.to_csv(out_csv, index=False)
+        symbol_suffix = "_".join(symbols_to_test) if len(symbols_to_test) > 1 else symbols_to_test[0]
+        out_csv = f"scalp_with_trend_results_{symbol_suffix}_{INTERVAL}.csv"
+        combined_trades.to_csv(out_csv, index=False)
 
     return {
-        "data": data_slice,
-        "trades": trades,
+        "data": combined_data,
+        "trades": combined_trades,
         "summary": summary,
         "output_csv": out_csv,
         "daily_stats": daily_stats,

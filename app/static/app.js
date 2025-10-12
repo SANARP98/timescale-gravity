@@ -308,10 +308,15 @@ function populateFormsFromInventory(item) {
   }
 }
 
-function renderInventoryTable(items) {
+function renderInventoryTable(items, sortOrder = "asc") {
   if (!items || items.length === 0) {
     return "";
   }
+
+  const sortIcon = sortOrder === "asc"
+    ? '<span class="sort-arrow sort-asc">▲</span>'
+    : '<span class="sort-arrow sort-desc">▼</span>';
+
   const rows = items
     .map(
       (item) => `
@@ -326,6 +331,7 @@ function renderInventoryTable(items) {
           <button
             type="button"
             class="table-action"
+            data-action="use"
             data-symbol="${item.symbol}"
             data-exchange="${item.exchange}"
             data-interval="${item.interval}"
@@ -333,6 +339,16 @@ function renderInventoryTable(items) {
             data-end-ts="${item.end_ts ?? ""}"
           >
             Use in forms
+          </button>
+          <button
+            type="button"
+            class="table-action-delete"
+            data-action="delete"
+            data-symbol="${item.symbol}"
+            data-exchange="${item.exchange}"
+            data-interval="${item.interval}"
+          >
+            Delete
           </button>
         </td>
       </tr>`
@@ -342,7 +358,9 @@ function renderInventoryTable(items) {
     <table>
       <thead>
         <tr>
-          <th>Symbol</th>
+          <th class="sortable-header" data-sort-order="${sortOrder}">
+            <span class="header-content">Symbol ${sortIcon}</span>
+          </th>
           <th>Exchange</th>
           <th>Interval</th>
           <th>Bars</th>
@@ -593,12 +611,12 @@ function setActiveTab(target) {
   });
 }
 
-async function loadInventory() {
+async function loadInventory(sortOrder = "asc") {
   if (!inventoryBox) return;
   clearStatusClasses(inventoryBox);
   inventoryBox.textContent = "Loading...";
   try {
-    const response = await fetch("/inventory");
+    const response = await fetch(`/inventory?sort_order=${sortOrder}`);
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || "Failed to load inventory.");
@@ -608,10 +626,37 @@ async function loadInventory() {
       inventoryBox.textContent = "No TimescaleDB data yet. Ingest a slice to see coverage.";
       return;
     }
-    inventoryBox.innerHTML = renderInventoryTable(items);
+    inventoryBox.innerHTML = renderInventoryTable(items, sortOrder);
   } catch (error) {
     inventoryBox.textContent = `Error loading inventory: ${error.message}`;
     inventoryBox.classList.add("status-error");
+  }
+}
+
+async function deleteInventoryItem(symbol, exchange, interval) {
+  if (!confirm(`Are you sure you want to delete all data for ${symbol} ${exchange} ${interval}?\n\nThis action cannot be undone!`)) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/inventory/${encodeURIComponent(symbol)}/${encodeURIComponent(exchange)}/${encodeURIComponent(interval)}`, {
+      method: "DELETE",
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || "Failed to delete data.");
+    }
+
+    const data = await response.json();
+    alert(`✅ ${data.message}`);
+
+    // Reload inventory with current sort order
+    const sortHeader = inventoryBox?.querySelector(".sortable-header");
+    const currentSort = sortHeader?.dataset.sortOrder || "asc";
+    await loadInventory(currentSort);
+  } catch (error) {
+    alert(`❌ Error: ${error.message}`);
   }
 }
 
@@ -736,21 +781,44 @@ if (backtestForm) {
 
 if (inventoryRefresh) {
   inventoryRefresh.addEventListener("click", () => {
-    loadInventory();
+    // Get current sort order from table header if exists
+    const sortHeader = inventoryBox?.querySelector(".sortable-header");
+    const currentSort = sortHeader?.dataset.sortOrder || "asc";
+    loadInventory(currentSort);
   });
 }
 
 if (inventoryBox) {
   inventoryBox.addEventListener("click", (event) => {
+    // Check if clicked on sortable header
+    const sortHeader = event.target.closest(".sortable-header");
+    if (sortHeader) {
+      const currentSort = sortHeader.dataset.sortOrder || "asc";
+      const newSort = currentSort === "asc" ? "desc" : "asc";
+      loadInventory(newSort);
+      return;
+    }
+
+    // Check if clicked on action button
     const button = event.target.closest("button[data-symbol]");
     if (!button) return;
-    populateFormsFromInventory({
-      symbol: button.dataset.symbol || "",
-      exchange: button.dataset.exchange || "",
-      interval: button.dataset.interval || "",
-      startTs: button.dataset.startTs || "",
-      endTs: button.dataset.endTs || "",
-    });
+
+    const action = button.dataset.action;
+    const symbol = button.dataset.symbol || "";
+    const exchange = button.dataset.exchange || "";
+    const interval = button.dataset.interval || "";
+
+    if (action === "delete") {
+      deleteInventoryItem(symbol, exchange, interval);
+    } else if (action === "use") {
+      populateFormsFromInventory({
+        symbol,
+        exchange,
+        interval,
+        startTs: button.dataset.startTs || "",
+        endTs: button.dataset.endTs || "",
+      });
+    }
   });
 }
 

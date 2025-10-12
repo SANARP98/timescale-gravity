@@ -21,7 +21,7 @@
         <h2>Available Data</h2>
         <button type="button" id="inventory-refresh">Refresh</button>
       </div>
-      <p class="card-subtle">Click "Use in forms" to prefill the fetch &amp; backtest requests with a stored slice.</p>
+      <p class="card-subtle">Click "Use in forms" to prefill the fetch &amp; backtest requests with a stored slice. Click Symbol header to sort.</p>
       <div id="inventory-box" class="result-box" data-empty="No TimescaleDB data yet. Ingest a slice to see coverage."></div>
     </section>
 
@@ -56,6 +56,14 @@
             <label>Start Date<input name="start_date" type="date" value="2025-09-01" required></label>
             <label>End Date<input name="end_date" type="date" value="2025-10-06" required></label>
             <label>Starting Capital<input name="starting_capital" type="number" value="100000" step="1000"></label>
+            <label>
+              Option Selection
+              <select name="option_selection">
+                <option value="both" selected>Both (PE + CE)</option>
+                <option value="pe">PE Only</option>
+                <option value="ce">CE Only</option>
+              </select>
+            </label>
           </div>
         </div>
 

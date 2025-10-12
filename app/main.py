@@ -10,11 +10,12 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from backtest_tsdb import run_backtest_from_config
-from tsdb_pipeline import fetch_history_to_tsdb, list_available_series
+from tsdb_pipeline import fetch_history_to_tsdb, list_available_series, delete_series
 
 TRADE_COLUMNS = [
     "entry_time",
     "exit_time",
+    "symbol",
     "side",
     "entry",
     "exit",
@@ -114,6 +115,9 @@ class BacktestRequest(BaseModel):
     trade_direction: Optional[str] = Field(
         default=None, pattern="^(both|long_only|short_only)$"
     )
+    option_selection: Optional[str] = Field(
+        default="both", pattern="^(pe|ce|both)$", description="For option symbols: run PE, CE, or Both"
+    )
     session_windows: Optional[list[Dict[str, str]]] = Field(
         default=None,
         description="List of {'start': 'HH:MM', 'end': 'HH:MM'} dicts",
@@ -159,8 +163,31 @@ def health() -> Dict[str, str]:
 
 
 @app.get("/inventory", response_model=list[InventoryItem])
-def inventory():
-    return list_available_series()
+def inventory(sort_order: str = "asc"):
+    """
+    Get inventory of available data series.
+
+    Query params:
+        sort_order: "asc" or "desc" (default: asc)
+    """
+    return list_available_series(sort_order=sort_order)
+
+
+@app.delete("/inventory/{symbol}/{exchange}/{interval}")
+def delete_inventory(symbol: str, exchange: str, interval: str):
+    """
+    Delete all data for a specific series.
+
+    Path params:
+        symbol: Symbol to delete
+        exchange: Exchange
+        interval: Interval
+    """
+    try:
+        rows_deleted = delete_series(symbol, exchange, interval)
+        return {"rows_deleted": rows_deleted, "message": f"Deleted {rows_deleted} rows for {symbol} {exchange} {interval}"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/fetch", response_model=FetchResponse)

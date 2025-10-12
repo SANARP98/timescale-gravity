@@ -202,6 +202,22 @@ button.table-action:hover {
   box-shadow: 0 6px 18px rgba(51, 102, 255, 0.25);
 }
 
+button.table-action-delete {
+  background: rgba(255, 139, 139, 0.12);
+  border: 1px solid rgba(255, 139, 139, 0.45);
+  color: #ff8b8b;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.8rem;
+  box-shadow: none;
+  margin-left: 0.5rem;
+}
+
+button.table-action-delete:hover {
+  background: rgba(255, 139, 139, 0.2);
+  box-shadow: 0 6px 18px rgba(255, 80, 80, 0.25);
+  transform: translateY(-1px);
+}
+
 .tab-buttons {
   display: flex;
   gap: 0.75rem;
@@ -311,6 +327,33 @@ td {
 th {
   font-weight: 600;
   color: rgba(197, 205, 224, 0.85);
+}
+
+th.sortable-header {
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+th.sortable-header:hover {
+  background-color: rgba(88, 181, 255, 0.1);
+  color: #58b5ff;
+}
+
+th.sortable-header .header-content {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+th.sortable-header .sort-arrow {
+  font-size: 0.75rem;
+  color: #58b5ff;
+  opacity: 0.8;
+}
+
+th.sortable-header:hover .sort-arrow {
+  opacity: 1;
 }
 
 .positive,
