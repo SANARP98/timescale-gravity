@@ -43,7 +43,8 @@ def fetch_results(ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     where_clause = ""
     params: Dict[str, Any] = {}
     if ids:
-        where_clause = "WHERE id = ANY(%(ids)s)"
+        # Cast the array elements to UUID type to match the id column type
+        where_clause = "WHERE id = ANY(%(ids)s::uuid[])"
         params["ids"] = ids
 
     query = sql.format(where_clause=where_clause)

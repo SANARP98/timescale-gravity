@@ -382,10 +382,12 @@ button:disabled {
 }
 
 .table-scroll thead {
-  background: #e2e8f0;
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
   position: sticky;
   top: 0;
   z-index: 1;
+  color: #ffffff;
+  font-weight: 600;
 }
 
 .table-scroll tbody tr:nth-child(even) {
@@ -402,6 +404,37 @@ button:disabled {
 .table-scroll tr.negative td {
   color: #dc2626;
   font-weight: 600;
+}
+
+.table-scroll td.target-value,
+.table-scroll td.target-column {
+  background: rgba(34, 197, 94, 0.12);
+  color: #16a34a;
+  font-weight: 600;
+  border-left: 3px solid #22c55e;
+}
+
+.table-scroll td.stoploss-value,
+.table-scroll td.stoploss-column {
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+  font-weight: 600;
+  border-left: 3px solid #ef4444;
+}
+
+/* Dark theme for modal tables */
+.modal .table-scroll td.target-value,
+.modal .table-scroll td.target-column {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+  border-left: 3px solid #22c55e;
+}
+
+.modal .table-scroll td.stoploss-value,
+.modal .table-scroll td.stoploss-column {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border-left: 3px solid #ef4444;
 }
 
 .chart-container {
@@ -424,6 +457,31 @@ button:disabled {
   color: rgba(226, 232, 240, 0.82);
 }
 
+.chart-container-compact {
+  position: relative;
+  min-height: 200px;
+  max-height: 360px;
+  padding: 1.5rem;
+  border-radius: 16px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  margin-bottom: 0.5rem;
+}
+
+.chart-container-compact canvas {
+  width: 100% !important;
+  height: 280px !important;
+  max-height: 280px;
+  border-radius: 8px;
+}
+
+.chart-container-compact .muted {
+  color: #64748b;
+  text-align: center;
+  padding: 2rem 0;
+}
+
 .modal .table-scroll {
   max-height: 60vh;
   background: #0b1220;
@@ -441,7 +499,9 @@ button:disabled {
 }
 
 .modal .table-scroll thead {
-  background: rgba(15, 23, 42, 0.85);
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: #ffffff;
+  font-weight: 600;
 }
 
 .two-col {
@@ -576,8 +636,9 @@ table {
 }
 
 table thead {
-  background: #e2e8f0;
-  color: #1e293b;
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: #ffffff;
+  font-weight: 600;
 }
 
 table th,
@@ -595,6 +656,22 @@ table tbody tr:nth-child(even) {
 table tbody .empty td {
   text-align: center;
   color: #64748b;
+}
+
+table td.target-value,
+table td.target-column {
+  background: rgba(34, 197, 94, 0.12);
+  color: #16a34a;
+  font-weight: 600;
+  border-left: 3px solid #22c55e;
+}
+
+table td.stoploss-value,
+table td.stoploss-column {
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+  font-weight: 600;
+  border-left: 3px solid #ef4444;
 }
 
 code {
@@ -634,6 +711,11 @@ code {
   display: flex;
   flex-direction: column;
   box-shadow: 0 24px 48px rgba(15, 23, 42, 0.35);
+}
+
+.modal-content.modal-large {
+  width: min(1400px, 95%);
+  max-height: 90vh;
 }
 
 .modal-header {
@@ -686,7 +768,9 @@ code {
 .table-scroll thead {
   position: sticky;
   top: 0;
-  background: rgba(15, 23, 42, 0.95);
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: #ffffff;
+  font-weight: 600;
   z-index: 1;
 }
 
@@ -700,4 +784,148 @@ code {
   padding: 1.5rem;
   text-align: center;
   color: rgba(203, 213, 225, 0.8);
+}
+
+.status-display {
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 1rem;
+  border: 1px solid #e2e8f0;
+}
+
+.status-display[data-empty]:empty::before {
+  content: "Configure or start the runner to see status.";
+  color: #64748b;
+  display: block;
+}
+
+.status-item {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 0.75rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.status-item:last-child {
+  border-bottom: none;
+}
+
+.status-label {
+  font-weight: 600;
+  color: #475569;
+  font-size: 0.9rem;
+}
+
+.status-value {
+  color: #1f2937;
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+
+.status-value.highlight {
+  color: #2563eb;
+  font-weight: 600;
+}
+
+.status-value.success {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.status-value.warning {
+  color: #ea580c;
+  font-weight: 600;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.status-badge.idle {
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.status-badge.running {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.status-badge.paused {
+  background: #fed7aa;
+  color: #ea580c;
+}
+
+.status-nested {
+  padding: 0.75rem;
+  background: #fff;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  margin-top: 0.5rem;
+}
+
+.status-nested-title {
+  font-weight: 600;
+  color: #1f2937;
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.status-nested-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.4rem 0;
+  font-size: 0.85rem;
+  color: #475569;
+  border-bottom: 1px dashed #e2e8f0;
+}
+
+.status-nested-item:last-child {
+  border-bottom: none;
+}
+
+.sortable-table th {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  padding-right: 1.5rem;
+}
+
+.sortable-table th:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.sortable-table th.sorted-asc::after {
+  content: " ▲";
+  position: absolute;
+  right: 0.5rem;
+  font-size: 0.7rem;
+  color: #fbbf24;
+}
+
+.sortable-table th.sorted-desc::after {
+  content: " ▼";
+  position: absolute;
+  right: 0.5rem;
+  font-size: 0.7rem;
+  color: #fbbf24;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.action-btn {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  border-radius: 6px;
 }

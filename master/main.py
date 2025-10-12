@@ -669,6 +669,91 @@ def multi_clear_results() -> ControlResponse:
     return ControlResponse(status=status)
 
 
+@app.get("/api/multi/history/batches")
+def multi_history_batches() -> List[Dict[str, Any]]:
+    """Get list of batches grouped by test_name with start/end times."""
+    try:
+        from tester_app.export_results import fetch_results
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"History module unavailable: {exc}") from exc
+
+    rows = fetch_results()
+    if not rows:
+        return []
+
+    # Group by test_name (or create unique batch identifier)
+    batches_dict: Dict[str, Dict[str, Any]] = {}
+
+    for row in rows:
+        test_name = row.get("test_name") or "Unnamed Batch"
+        batch_key = f"{test_name}_{row.get('strategy')}_{row.get('created_at').date()}"
+
+        if batch_key not in batches_dict:
+            batches_dict[batch_key] = {
+                "batch_id": batch_key,
+                "test_name": test_name,
+                "strategy": row.get("strategy"),
+                "started_at": row.get("created_at"),
+                "ended_at": row.get("created_at"),
+                "total_runs": 0,
+                "row_ids": [],
+            }
+
+        batch = batches_dict[batch_key]
+        batch["total_runs"] += 1
+        batch["row_ids"].append(str(row.get("id")))
+
+        # Update end time if this row is later
+        if row.get("created_at") > batch["ended_at"]:
+            batch["ended_at"] = row.get("created_at")
+
+    return list(batches_dict.values())
+
+
+@app.get("/api/multi/history/batch/{batch_id}")
+def multi_history_batch_details(batch_id: str) -> List[HistoryItem]:
+    """Get detailed rows for a specific batch."""
+    try:
+        from tester_app.export_results import fetch_results
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"History module unavailable: {exc}") from exc
+
+    rows = fetch_results()
+
+    # Filter rows that match this batch
+    # Decode batch_id to get test_name, strategy, date
+    parts = batch_id.rsplit("_", 2)
+    if len(parts) < 3:
+        raise HTTPException(status_code=400, detail="Invalid batch_id format")
+
+    test_name_part = parts[0]
+    strategy_part = parts[1]
+
+    history: List[HistoryItem] = []
+    for row in rows:
+        row_test_name = row.get("test_name") or "Unnamed Batch"
+        row_batch_key = f"{row_test_name}_{row.get('strategy')}_{row.get('created_at').date()}"
+
+        if row_batch_key == batch_id:
+            params = row.get("params") or {}
+            summary = row.get("summary") or {}
+            history.append(
+                HistoryItem(
+                    id=str(row.get("id")),
+                    created_at=row.get("created_at"),
+                    strategy=row.get("strategy"),
+                    symbol=row.get("symbol"),
+                    exchange=row.get("exchange"),
+                    interval=row.get("interval"),
+                    test_name=row.get("test_name"),
+                    params=params,
+                    summary=summary,
+                )
+            )
+
+    return history
+
+
 @app.get("/api/multi/history", response_model=List[HistoryItem])
 def multi_history() -> List[HistoryItem]:
     try:
@@ -698,14 +783,24 @@ def multi_history() -> List[HistoryItem]:
 
 
 @app.get("/api/multi/history/export")
-def multi_history_export(ids: Optional[str] = None) -> StreamingResponse:
+def multi_history_export(ids: Optional[str] = None, batch_id: Optional[str] = None) -> StreamingResponse:
     try:
         from tester_app.export_results import fetch_results, flatten_row
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Export module unavailable: {exc}") from exc
 
     id_list: Optional[List[str]] = None
-    if ids:
+
+    # If batch_id is provided, get all IDs for that batch
+    if batch_id:
+        all_rows = fetch_results()
+        id_list = []
+        for row in all_rows:
+            row_test_name = row.get("test_name") or "Unnamed Batch"
+            row_batch_key = f"{row_test_name}_{row.get('strategy')}_{row.get('created_at').date()}"
+            if row_batch_key == batch_id:
+                id_list.append(str(row.get("id")))
+    elif ids:
         id_list = [candidate.strip() for candidate in ids.split(",") if candidate.strip()]
 
     rows = fetch_results(ids=id_list)
@@ -729,10 +824,51 @@ def multi_history_export(ids: Optional[str] = None) -> StreamingResponse:
     buffer.seek(0)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    suffix = "subset" if id_list else "all"
+    if batch_id:
+        suffix = f"batch_{batch_id[:20]}"
+    elif id_list:
+        suffix = "subset"
+    else:
+        suffix = "all"
     filename = f"tester_results_{suffix}_{timestamp}.csv"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv", headers=headers)
+
+
+@app.delete("/api/multi/history/batch/{batch_id}")
+def multi_history_delete_batch(batch_id: str) -> Dict[str, Any]:
+    """Delete all rows belonging to a specific batch."""
+    try:
+        from tester_app.export_results import fetch_results
+        from tsdb_pipeline import get_conn
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Database module unavailable: {exc}") from exc
+
+    rows = fetch_results()
+
+    # Find all IDs for this batch
+    ids_to_delete: List[str] = []
+    for row in rows:
+        row_test_name = row.get("test_name") or "Unnamed Batch"
+        row_batch_key = f"{row_test_name}_{row.get('strategy')}_{row.get('created_at').date()}"
+        if row_batch_key == batch_id:
+            ids_to_delete.append(str(row.get("id")))
+
+    if not ids_to_delete:
+        raise HTTPException(status_code=404, detail=f"Batch '{batch_id}' not found")
+
+    # Delete from database
+    delete_sql = "DELETE FROM tester_results WHERE id = ANY(%s)"
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(delete_sql, (ids_to_delete,))
+        deleted_count = cur.rowcount
+        conn.commit()
+
+    return {
+        "deleted_count": deleted_count,
+        "batch_id": batch_id,
+        "message": f"Successfully deleted {deleted_count} rows from batch '{batch_id}'",
+    }
 
 
 __all__ = [

@@ -10,6 +10,9 @@ const dbStatsEl = document.getElementById("db-stats");
 const historyStatus = document.getElementById("history-status");
 const historyTableBody = document.querySelector("#history-table tbody");
 const historyExportAllBtn = document.getElementById("history-export-all-btn");
+const historyFilterInput = document.getElementById("history-filter");
+const historyFilterBtn = document.getElementById("history-filter-btn");
+const historyFilterClearBtn = document.getElementById("history-filter-clear-btn");
 const toggleConfigBtn = document.getElementById("toggle-config-btn");
 const configForm = document.getElementById("config-form");
 const applyConfigBtn = document.getElementById("apply-config-btn");
@@ -17,12 +20,20 @@ const resetConfigBtn = document.getElementById("reset-config-btn");
 const configInfo = document.getElementById("config-info");
 const strategySelect = document.getElementById("strategy-select");
 const strategyDescription = document.getElementById("strategy-description");
+const testNameInput = document.getElementById("test-name");
+const symbolsInput = document.getElementById("symbols");
+const paramFieldsContainer = document.getElementById("param-fields");
+const paramJsonPreview = document.getElementById("param-json-preview");
+const paramCopyBtn = document.getElementById("param-copy-btn");
+const paramResetBtn = document.getElementById("param-reset-btn");
 
 let statusTimer = null;
 let historyCache = [];
 let currentSort = { column: null, direction: null };
 let availableStrategies = [];
 let currentStrategy = null;
+let historyFilterText = "";
+let historyFiltered = [];
 
 async function postControl(endpoint) {
   const response = await fetch(endpoint, {
@@ -75,11 +86,15 @@ function renderStatus(status) {
   statusMessage.textContent = message;
   statusMessage.className = statusClass;
 
-  const fields = [
+  const fields = [];
+  if (status.test_name) {
+    fields.push(["Batch", status.test_name]);
+  }
+  fields.push(
     ["Completed", `${status.completed_jobs}/${status.total_jobs}`],
     ["Remaining", formatNumber(status.remaining_jobs, 0)],
-    ["Progress %", formatNumber(status.progress_percent)],
-  ];
+    ["Progress %", formatNumber(status.progress_percent)]
+  );
 
   if (status.max_workers) {
     fields.push(["Workers", formatNumber(status.max_workers, 0)]);
@@ -120,7 +135,9 @@ function renderStatus(status) {
 
   if (status.last_result && lastResultEl) {
     const { summary, params } = status.last_result;
+    const batchName = status.last_result.test_name || status.test_name || "—";
     const rows = [
+      ["Batch", batchName],
       ["Symbol", status.last_result.symbol],
       ["Target", params.target_points],
       ["Stoploss", params.stoploss_points],
@@ -190,6 +207,8 @@ function getSortValue(item, column) {
       return item.strategy || '';
     case 'symbol':
       return item.symbol;
+    case 'test_name':
+      return item.test_name || '';
     case 'target':
       return params.target_points ?? params.target ?? 0;
     case 'ema':
@@ -259,22 +278,34 @@ function renderHistory(items) {
 
 function renderHistoryRows() {
   if (!historyStatus || !historyTableBody) return;
-  const noRuns = historyCache.length === 0;
-  if (historyExportAllBtn) {
-    historyExportAllBtn.disabled = noRuns;
-  }
-  if (exportAllBtn) {
-    exportAllBtn.disabled = noRuns;
-  }
+  const totalRuns = historyCache.length;
+  const filter = historyFilterText.trim().toLowerCase();
+  const filteredItems = filter
+    ? historyCache.filter((item) => (item.test_name || "").toLowerCase().includes(filter))
+    : historyCache;
 
-  if (noRuns) {
-    historyStatus.textContent = "No tester runs stored yet.";
+  historyFiltered = filteredItems;
+
+  if (!filteredItems.length) {
+    historyStatus.textContent = filter
+      ? `No runs match “${historyFilterText}”.`
+      : "No tester runs stored yet.";
     historyTableBody.innerHTML = "";
     return;
   }
 
-  historyStatus.textContent = `${historyCache.length} runs stored.`;
-  const rowsHtml = historyCache
+  historyStatus.textContent = filter
+    ? `${filteredItems.length} runs match “${historyFilterText}” out of ${totalRuns}.`
+    : `${totalRuns} runs stored.`;
+
+  if (historyExportAllBtn) {
+    historyExportAllBtn.disabled = filteredItems.length === 0;
+  }
+  if (exportAllBtn) {
+    exportAllBtn.disabled = filteredItems.length === 0;
+  }
+
+  const rowsHtml = filteredItems
     .map((item) => {
       const params = item.params || {};
       const summary = item.summary || {};
@@ -293,6 +324,7 @@ function renderHistoryRows() {
           <td>${formatDateTime(item.created_at)}</td>
           <td>${item.strategy || 'Unknown'}</td>
           <td>${item.symbol}</td>
+          <td>${item.test_name ? item.test_name : '—'}</td>
           <td>${formatNumber(target)} / ${formatNumber(stop)}</td>
           <td>${formatNumber(emaFast, 0)} / ${formatNumber(emaSlow, 0)}</td>
           <td>${formatNumber(atrMin)}</td>
@@ -426,24 +458,30 @@ async function loadStrategies() {
     availableStrategies = data.strategies || [];
 
     if (availableStrategies.length === 0) {
-      strategySelect.innerHTML = '<option value="">No strategies available</option>';
+      if (strategySelect) {
+        strategySelect.innerHTML = '<option value="">No strategies available</option>';
+      }
+      renderParamFields();
       return;
     }
 
     // Populate dropdown
-    strategySelect.innerHTML = availableStrategies
-      .map(s => `<option value="${s.name}">${s.title}</option>`)
-      .join("");
+    if (strategySelect) {
+      strategySelect.innerHTML = availableStrategies
+        .map((s) => `<option value="${s.name}">${s.title}</option>`)
+        .join("");
+      currentStrategy = availableStrategies[0];
+      strategySelect.value = currentStrategy.name;
+      updateStrategyDescription();
+    }
 
-    // Select first strategy by default
-    currentStrategy = availableStrategies[0];
-    strategySelect.value = currentStrategy.name;
-    updateStrategyDescription();
-
-    logger.info(`Loaded ${availableStrategies.length} strategies`);
+    renderParamFields();
   } catch (error) {
     console.error("Failed to load strategies:", error);
-    strategySelect.innerHTML = '<option value="">Error loading strategies</option>';
+    if (strategySelect) {
+      strategySelect.innerHTML = '<option value="">Error loading strategies</option>';
+    }
+    renderParamFields();
   }
 }
 
@@ -462,70 +500,269 @@ function onStrategyChange() {
 
   if (currentStrategy) {
     updateStrategyDescription();
-    // TODO: In future, rebuild config form based on strategy parameters
+    renderParamFields();
   }
 }
 
-function parseCommaSeparatedNumbers(value, asFloat = true) {
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-    .map((s) => (asFloat ? parseFloat(s) : parseInt(s, 10)))
-    .filter((n) => !isNaN(n));
+function parseSymbolsInput(raw) {
+  if (!raw) return [];
+  return raw
+    .split(/[\n,]+/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 }
 
-function getConfigFromForm() {
-  const symbols = document.getElementById("symbols").value
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+function coerceParamValue(value, type) {
+  if (type === "integer") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isNaN(parsed)) throw new Error(`Invalid integer value: ${value}`);
+    return parsed;
+  }
+  if (type === "number") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isNaN(parsed)) throw new Error(`Invalid number value: ${value}`);
+    return parsed;
+  }
+  if (type === "boolean") {
+    if (typeof value === "boolean") return value;
+    const normalized = String(value).toLowerCase();
+    if (["true", "1", "yes"].includes(normalized)) return true;
+    if (["false", "0", "no"].includes(normalized)) return false;
+    throw new Error(`Invalid boolean value: ${value}`);
+  }
+  return String(value);
+}
 
-  return {
-    symbols,
-    start_date: document.getElementById("start-date").value,
-    end_date: document.getElementById("end-date").value,
-    starting_capital: parseFloat(document.getElementById("starting-capital").value),
-    qty_per_point: parseFloat(document.getElementById("qty-per-point").value),
-    max_workers: parseInt(document.getElementById("max-workers").value, 10),
-    target_min: parseFloat(document.getElementById("target-min").value),
-    target_max: parseFloat(document.getElementById("target-max").value),
-    stoploss_min: parseFloat(document.getElementById("stoploss-min").value),
-    stoploss_max: parseFloat(document.getElementById("stoploss-max").value),
-    ema_fast: parseCommaSeparatedNumbers(document.getElementById("ema-fast").value, false),
-    ema_slow: parseCommaSeparatedNumbers(document.getElementById("ema-slow").value, false),
-    atr_min: parseCommaSeparatedNumbers(document.getElementById("atr-min").value, true),
-    daily_loss_cap: parseCommaSeparatedNumbers(document.getElementById("daily-loss-cap").value, true),
-  };
+function expandRangeToken(token, type) {
+  const trimmed = token.trim();
+  if (!trimmed) return [];
+
+  const rangeMatch = trimmed.match(/^(-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)(?::(-?\d+(?:\.\d+)?))?$/);
+  if (!rangeMatch || (type !== "integer" && type !== "number")) {
+    return [coerceParamValue(trimmed, type)];
+  }
+
+  const start = Number.parseFloat(rangeMatch[1]);
+  const end = Number.parseFloat(rangeMatch[2]);
+  let step = rangeMatch[3] !== undefined ? Number.parseFloat(rangeMatch[3]) : undefined;
+
+  if (step === undefined || Number.isNaN(step) || step === 0) {
+    step = start <= end ? 1 : -1;
+  }
+
+  const values = [];
+  const epsilon = 1e-9;
+  if (step > 0) {
+    for (let current = start; current <= end + epsilon; current += step) {
+      values.push(type === "integer" ? Math.round(current) : Number.parseFloat(current.toFixed(6)));
+    }
+  } else {
+    for (let current = start; current >= end - epsilon; current += step) {
+      values.push(type === "integer" ? Math.round(current) : Number.parseFloat(current.toFixed(6)));
+    }
+  }
+
+  return values;
+}
+
+function parseRangeValues(raw, type) {
+  if (!raw) return [];
+  const segments = raw.split(/[,\n]+/).map((segment) => segment.trim()).filter(Boolean);
+  let values = [];
+  segments.forEach((segment) => {
+    values = values.concat(expandRangeToken(segment, type));
+  });
+  return Array.from(new Set(values.map((val) => (typeof val === "number" ? Number(val) : val))));
+}
+
+function renderParamFields() {
+  if (!paramFieldsContainer) return;
+  paramFieldsContainer.innerHTML = "";
+
+  if (!currentStrategy || !currentStrategy.parameters || !currentStrategy.parameters.properties) {
+    paramFieldsContainer.dataset.empty = "Strategy exposes no tunable parameters.";
+    if (paramJsonPreview) {
+      paramJsonPreview.value = "";
+      paramJsonPreview.placeholder = "Select a strategy to generate parameter JSON";
+    }
+    return;
+  }
+
+  const { properties } = currentStrategy.parameters;
+  const fields = Object.entries(properties)
+    .map(([name, schema]) => generateParamField(name, schema))
+    .join("");
+
+  paramFieldsContainer.removeAttribute("data-empty");
+  paramFieldsContainer.innerHTML = fields;
+
+  paramFieldsContainer.querySelectorAll("input[data-param], select[data-param], textarea[data-param]").forEach((field) => {
+    field.addEventListener("input", () => updateParamJsonPreview());
+    field.addEventListener("change", () => updateParamJsonPreview());
+  });
+
+  updateParamJsonPreview();
+}
+
+function generateParamField(name, schema) {
+  const title = schema.title || name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const description = schema.description ? `<p class="field-help">${schema.description}</p>` : "";
+  const type = schema.type || "string";
+  const defaultValue = schema.default;
+  const defaultString =
+    defaultValue === undefined || defaultValue === null
+      ? ""
+      : Array.isArray(defaultValue)
+      ? defaultValue.join(",")
+      : String(defaultValue);
+
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    const options = schema.enum
+      .map((value) => {
+        const label = String(value).replace(/_/g, " ");
+        const selected = Array.isArray(defaultValue)
+          ? defaultValue.includes(value)
+          : String(value) === String(defaultValue);
+        return `<option value="${value}"${selected ? " selected" : ""}>${label}</option>`;
+      })
+      .join("");
+
+    return `
+      <div class="config-group">
+        <label>${title}</label>
+        <select name="${name}" data-param="${name}" data-type="${type}" multiple size="4">
+          ${options}
+        </select>
+        ${description}
+      </div>
+    `;
+  }
+
+  if (type === "boolean") {
+    const trueSelected = defaultValue === true || (Array.isArray(defaultValue) && defaultValue.includes(true));
+    const falseSelected = defaultValue === false || (Array.isArray(defaultValue) && defaultValue.includes(false));
+    return `
+      <div class="config-group">
+        <label>${title}</label>
+        <select name="${name}" data-param="${name}" data-type="boolean" multiple size="2">
+          <option value="true"${trueSelected ? " selected" : ""}>True</option>
+          <option value="false"${falseSelected ? " selected" : ""}>False</option>
+        </select>
+        <p class="field-help">Select one or both options.</p>
+        ${description}
+      </div>
+    `;
+  }
+
+  if (type === "integer" || type === "number") {
+    return `
+      <div class="config-group">
+        <label>${title}</label>
+        <input name="${name}" type="text" value="${defaultString}" data-param="${name}" data-type="${type}" placeholder="e.g. 2,4,6 or 2-10:2" />
+        <p class="field-help">Comma lists or ranges (start-end[:step]).</p>
+        ${description}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="config-group">
+      <label>${title}</label>
+      <input name="${name}" type="text" value="${defaultString}" data-param="${name}" data-type="string" placeholder="Comma-separated values" />
+      ${description}
+    </div>
+  `;
+}
+
+function collectParamRanges(strict = false) {
+  const ranges = {};
+  const errors = [];
+  if (!paramFieldsContainer) {
+    return { ranges, errors };
+  }
+
+  paramFieldsContainer.querySelectorAll("[data-param]").forEach((field) => {
+    const name = field.dataset.param;
+    const type = field.dataset.type || "string";
+
+    try {
+      if (field instanceof HTMLSelectElement && field.multiple) {
+        const selectedValues = Array.from(field.selectedOptions).map((option) => coerceParamValue(option.value, type));
+        if (selectedValues.length) {
+          ranges[name] = selectedValues;
+        }
+        return;
+      }
+
+      const raw = field.value.trim();
+      if (!raw) return;
+      const values = parseRangeValues(raw, type);
+      if (values.length) {
+        ranges[name] = values;
+      }
+    } catch (err) {
+      errors.push(err.message);
+    }
+  });
+
+  if (strict && errors.length) {
+    throw new Error(errors[0]);
+  }
+
+  return { ranges, errors };
+}
+
+function updateParamJsonPreview() {
+  if (!paramJsonPreview) return;
+  try {
+    const { ranges, errors } = collectParamRanges(false);
+    if (Object.keys(ranges).length === 0) {
+      paramJsonPreview.value = "";
+      paramJsonPreview.placeholder = "No parameter ranges specified.";
+    } else {
+      paramJsonPreview.value = JSON.stringify(ranges, null, 2);
+    }
+    if (errors.length) {
+      paramJsonPreview.dataset.error = errors[0];
+      paramJsonPreview.title = errors[0];
+    } else {
+      delete paramJsonPreview.dataset.error;
+      paramJsonPreview.removeAttribute("title");
+    }
+  } catch (err) {
+    paramJsonPreview.value = "";
+    paramJsonPreview.placeholder = err.message;
+    paramJsonPreview.dataset.error = err.message;
+    paramJsonPreview.title = err.message;
+  }
 }
 
 function setDefaultConfig() {
-  document.getElementById("symbols").value = "NIFTY28OCT2525200CE,NIFTY28OCT2525200PE";
+  if (symbolsInput) {
+    symbolsInput.value = "NIFTY28OCT2525200CE\nNIFTY28OCT2525200PE";
+  }
   document.getElementById("start-date").value = "2025-09-01";
   document.getElementById("end-date").value = "2025-10-06";
   document.getElementById("starting-capital").value = "100000";
   document.getElementById("qty-per-point").value = "150";
   document.getElementById("max-workers").value = "2";
-  document.getElementById("target-min").value = "2";
-  document.getElementById("target-max").value = "10";
-  document.getElementById("stoploss-min").value = "2";
-  document.getElementById("stoploss-max").value = "10";
-  document.getElementById("ema-fast").value = "3,5";
-  document.getElementById("ema-slow").value = "10,20";
-  document.getElementById("atr-min").value = "1,2,3";
-  document.getElementById("daily-loss-cap").value = "-1000,-1500,-2000,-2500,-3000";
+  if (testNameInput) {
+    testNameInput.value = "";
+  }
+  renderParamFields();
 }
 
-function calculateTotalJobs(config) {
-  const numSymbols = config.symbols.length;
-  const numTargets = Math.floor((config.target_max - config.target_min) / 0.5) + 1;
-  const numStoploss = Math.floor((config.stoploss_max - config.stoploss_min) / 0.5) + 1;
-  const numEmaFast = config.ema_fast.length;
-  const numEmaSlow = config.ema_slow.length;
-  const numAtrMin = config.atr_min.length;
-  const numDailyLossCap = config.daily_loss_cap.length;
-
-  return numSymbols * numTargets * numStoploss * numEmaFast * numEmaSlow * numAtrMin * numDailyLossCap;
+function estimateTotalJobs(symbolCount, paramRanges) {
+  if (!symbolCount) return 0;
+  let total = symbolCount;
+  Object.entries(paramRanges).forEach(([key, values]) => {
+    if (key === "symbols") return;
+    const arr = Array.isArray(values) ? values : [values];
+    if (arr.length) {
+      total *= arr.length;
+    }
+  });
+  return total;
 }
 
 function setupControls() {
@@ -599,13 +836,36 @@ function setupControls() {
   }
   if (historyExportAllBtn) {
     historyExportAllBtn.addEventListener("click", async () => {
-      if (!historyCache.length) return;
-      const ids = historyCache.map((item) => item.id).filter(Boolean);
+      const source = historyFilterText ? historyFiltered : historyCache;
+      if (!source.length) return;
+      const ids = source.map((item) => item.id).filter(Boolean);
       try {
         await downloadHistoryCsv({ ids, fallbackName: `tester_results_${Date.now()}.csv`, button: historyExportAllBtn });
       } catch (error) {
         console.error("History export failed", error);
       }
+    });
+  }
+
+  if (historyFilterBtn && historyFilterInput) {
+    const applyHistoryFilter = () => {
+      historyFilterText = historyFilterInput.value.trim();
+      renderHistoryRows();
+    };
+    historyFilterBtn.addEventListener("click", applyHistoryFilter);
+    historyFilterInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applyHistoryFilter();
+      }
+    });
+  }
+
+  if (historyFilterClearBtn && historyFilterInput) {
+    historyFilterClearBtn.addEventListener("click", () => {
+      historyFilterText = "";
+      historyFilterInput.value = "";
+      renderHistoryRows();
     });
   }
 
@@ -628,57 +888,49 @@ function setupControls() {
       configInfo.className = "config-info";
 
       try {
-        const formConfig = getConfigFromForm();
-
-        // Validate
-        if (formConfig.symbols.length === 0) {
+        const symbols = parseSymbolsInput(symbolsInput.value);
+        if (!symbols.length) {
           throw new Error("At least one symbol is required");
         }
-        if (formConfig.target_min > formConfig.target_max) {
-          throw new Error("Target min must be <= target max");
-        }
-        if (formConfig.stoploss_min > formConfig.stoploss_max) {
-          throw new Error("Stoploss min must be <= stoploss max");
-        }
 
-        // Build param_ranges from form values
-        const targetPoints = [];
-        for (let i = formConfig.target_min; i <= formConfig.target_max; i += 0.5) {
-          targetPoints.push(i);
+        const startDate = document.getElementById("start-date").value;
+        const endDate = document.getElementById("end-date").value;
+        if (!startDate || !endDate) {
+          throw new Error("Start and end dates are required");
         }
 
-        const stoplossPoints = [];
-        for (let i = formConfig.stoploss_min; i <= formConfig.stoploss_max; i += 0.5) {
-          stoplossPoints.push(i);
+        const startingCapital = Number(document.getElementById("starting-capital").value);
+        const qtyPerPoint = Number(document.getElementById("qty-per-point").value);
+        const maxWorkers = Number(document.getElementById("max-workers").value);
+        if (Number.isNaN(startingCapital) || Number.isNaN(qtyPerPoint) || Number.isNaN(maxWorkers)) {
+          throw new Error("Provide valid numeric values for capital, quantity, and workers");
         }
 
-        const paramRanges = {
-          target_points: targetPoints,
-          stoploss_points: stoplossPoints,
-          ema_fast: formConfig.ema_fast,
-          ema_slow: formConfig.ema_slow,
-          atr_min_points: formConfig.atr_min,
-          daily_loss_cap: formConfig.daily_loss_cap,
-          trade_direction: ["long_only"],
-          confirm_trend_at_entry: [true],
-          enable_eod_square_off: [true],
-        };
+        const { ranges } = collectParamRanges(true);
+        if (!Object.keys(ranges).length) {
+          throw new Error("Specify at least one parameter range");
+        }
 
-        // Build config payload
+        const paramRanges = { ...ranges, symbols };
+
         const config = {
-          strategy: currentStrategy ? currentStrategy.name : "scalp_with_trend",
-          symbols: formConfig.symbols,
-          start_date: formConfig.start_date,
-          end_date: formConfig.end_date,
-          starting_capital: formConfig.starting_capital,
-          qty_per_point: formConfig.qty_per_point,
-          max_workers: formConfig.max_workers,
+          strategy: currentStrategy ? currentStrategy.name : strategySelect.value,
+          test_name: testNameInput ? testNameInput.value.trim() || null : null,
+          symbols,
+          start_date: startDate,
+          end_date: endDate,
+          starting_capital: startingCapital,
+          qty_per_point: qtyPerPoint,
+          max_workers: maxWorkers,
           param_ranges: paramRanges,
         };
 
-        const totalJobs = calculateTotalJobs(formConfig);
+        const totalJobs = estimateTotalJobs(symbols.length, ranges);
         if (totalJobs > 100000) {
-          if (!confirm(`This configuration will generate ${totalJobs.toLocaleString()} jobs. This may take a very long time. Continue?`)) {
+          const proceed = confirm(
+            `This configuration will generate ${totalJobs.toLocaleString()} jobs. This may take a very long time. Continue?`
+          );
+          if (!proceed) {
             applyConfigBtn.disabled = false;
             return;
           }
@@ -698,7 +950,15 @@ function setupControls() {
         const result = await response.json();
         renderStatus(result.status);
 
-        configInfo.textContent = `Configuration applied! Strategy: ${config.strategy}, Total jobs: ${result.status.total_jobs.toLocaleString()}`;
+        const summaryParts = [
+          `Strategy: ${config.strategy}`,
+          `Jobs: ${result.status.total_jobs.toLocaleString()}`,
+        ];
+        if (config.test_name) {
+          summaryParts.unshift(`Batch: ${config.test_name}`);
+        }
+
+        configInfo.textContent = `Configuration applied! ${summaryParts.join(" • ")}`;
         configInfo.className = "config-info success";
 
         // Auto-hide config panel after 2 seconds
@@ -714,6 +974,35 @@ function setupControls() {
       } finally {
         applyConfigBtn.disabled = false;
       }
+    });
+  }
+
+  if (paramCopyBtn && paramJsonPreview) {
+    paramCopyBtn.addEventListener("click", async () => {
+      if (!paramJsonPreview.value) {
+        configInfo.textContent = "Nothing to copy yet.";
+        configInfo.className = "config-info";
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(paramJsonPreview.value);
+        configInfo.textContent = "Parameter JSON copied to clipboard.";
+        configInfo.className = "config-info success";
+      } catch (error) {
+        configInfo.textContent = `Unable to copy: ${error.message}`;
+        configInfo.className = "config-info error";
+      }
+    });
+  }
+
+  if (paramResetBtn) {
+    paramResetBtn.addEventListener("click", () => {
+      renderParamFields();
+      configInfo.textContent = "Parameter ranges reset to strategy defaults.";
+      configInfo.className = "config-info";
+      setTimeout(() => {
+        configInfo.textContent = "";
+      }, 1500);
     });
   }
 

@@ -96,9 +96,15 @@ const multiPauseBtn = document.getElementById("multi-pause");
 const multiResetBtn = document.getElementById("multi-reset");
 const multiClearBtn = document.getElementById("multi-clear");
 const multiRefreshBtn = document.getElementById("multi-refresh");
-const multiStatus = document.getElementById("multi-status");
+const multiStatus = document.getElementById("multi-status-display");
 const multiHistoryBtn = document.getElementById("multi-history-refresh");
 const historyTable = document.getElementById("history-table");
+const autoPopulateBtn = document.getElementById("auto-populate-ranges");
+const multiParamRangesFields = document.getElementById("multi-param-ranges-fields");
+const batchModal = document.getElementById("batch-detail-modal");
+const batchModalTitle = document.getElementById("batch-modal-title");
+const batchModalBody = document.getElementById("batch-modal-body");
+const batchModalClose = document.getElementById("batch-modal-close");
 
 let singleStrategies = [];
 let dailyChart = null;
@@ -477,6 +483,14 @@ function renderTradesTable(trades) {
 
           if (header.includes("time")) {
             display = formatTimestamp(value);
+          } else if (header.includes("target") && !header.includes("rupees") && !header.includes("pnl")) {
+            // Special styling for target columns
+            cellClass = "target-value";
+            display = typeof value === "number" ? formatValue(value) : value;
+          } else if ((header.includes("stoploss") || header.includes("stop_loss")) && !header.includes("rupees") && !header.includes("pnl")) {
+            // Special styling for stoploss columns
+            cellClass = "stoploss-value";
+            display = typeof value === "number" ? formatValue(value) : value;
           } else if (typeof value === "number") {
             if (header.endsWith("rupees") || header.includes("pnl") || header.includes("net")) {
               cellClass = value >= 0 ? "positive" : "negative";
@@ -536,7 +550,15 @@ function renderDailyChart(stats) {
   });
 
   const barColors = dailyValues.map((value) =>
-    value >= 0 ? "rgba(34, 197, 94, 0.7)" : "rgba(248, 113, 113, 0.75)",
+    value >= 0
+      ? "rgba(16, 185, 129, 0.85)"  // Emerald green
+      : "rgba(239, 68, 68, 0.85)"    // Red
+  );
+
+  const barBorderColors = dailyValues.map((value) =>
+    value >= 0
+      ? "rgba(5, 150, 105, 1)"       // Darker emerald
+      : "rgba(220, 38, 38, 1)"        // Darker red
   );
 
   dailyChartCanvas.classList.remove("hidden");
@@ -550,22 +572,33 @@ function renderDailyChart(stats) {
           label: "Daily P&L",
           data: dailyValues,
           backgroundColor: barColors,
-          borderRadius: 4,
+          borderColor: barBorderColors,
+          borderWidth: 1.5,
+          borderRadius: 6,
           borderSkipped: false,
           yAxisID: "y",
           order: 2,
+          barThickness: "flex",
+          maxBarThickness: 40,
         },
         {
           type: "line",
           label: "Cumulative P&L",
           data: cumulativeData,
-          borderColor: "rgba(56, 189, 248, 0.95)",
-          backgroundColor: "rgba(56, 189, 248, 0.15)",
+          borderColor: "rgba(59, 130, 246, 1)",      // Blue
+          backgroundColor: "rgba(59, 130, 246, 0.08)", // Light blue fill
           borderWidth: 3,
           pointRadius: 4,
-          pointHoverRadius: 6,
+          pointHoverRadius: 7,
+          pointBackgroundColor: "rgba(59, 130, 246, 1)",
+          pointBorderColor: "#ffffff",
+          pointBorderWidth: 2,
+          pointHoverBackgroundColor: "rgba(37, 99, 235, 1)",
+          pointHoverBorderColor: "#ffffff",
+          pointHoverBorderWidth: 2,
           yAxisID: "y",
           fill: true,
+          tension: 0.3,
           order: 1,
         },
       ],
@@ -573,27 +606,64 @@ function renderDailyChart(stats) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      aspectRatio: 2.5,
       interaction: {
         mode: "index",
         intersect: false,
       },
+      layout: {
+        padding: {
+          left: 5,
+          right: 5,
+          top: 10,
+          bottom: 5,
+        },
+      },
       scales: {
         y: {
+          beginAtZero: false,
           ticks: {
             callback: (value) =>
               `₹${Number(value).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`,
+            font: {
+              size: 11,
+              family: "'Inter', system-ui, sans-serif",
+              weight: "500",
+            },
+            color: "#475569",
+            padding: 8,
           },
           grid: {
-            color: "rgba(226, 232, 240, 0.25)",
+            color: "rgba(148, 163, 184, 0.15)",
+            lineWidth: 1,
+            drawBorder: false,
+          },
+          border: {
+            display: false,
           },
         },
         x: {
           ticks: {
             maxRotation: 45,
             minRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: 20,
+            font: {
+              size: 10,
+              family: "'Inter', system-ui, sans-serif",
+              weight: "500",
+            },
+            color: "#64748b",
+            padding: 6,
           },
           grid: {
-            color: "rgba(226, 232, 240, 0.12)",
+            color: "rgba(148, 163, 184, 0.08)",
+            lineWidth: 1,
+            drawBorder: false,
+            drawTicks: false,
+          },
+          border: {
+            display: false,
           },
         },
       },
@@ -601,8 +671,41 @@ function renderDailyChart(stats) {
         legend: {
           display: true,
           position: "top",
+          align: "end",
+          labels: {
+            boxWidth: 14,
+            boxHeight: 14,
+            padding: 12,
+            font: {
+              size: 12,
+              family: "'Inter', system-ui, sans-serif",
+              weight: "600",
+            },
+            color: "#1e293b",
+            usePointStyle: true,
+            pointStyle: "circle",
+          },
         },
         tooltip: {
+          enabled: true,
+          backgroundColor: "rgba(15, 23, 42, 0.95)",
+          titleColor: "#f1f5f9",
+          bodyColor: "#e2e8f0",
+          borderColor: "rgba(148, 163, 184, 0.3)",
+          borderWidth: 1,
+          padding: 12,
+          boxPadding: 6,
+          cornerRadius: 8,
+          titleFont: {
+            size: 13,
+            weight: "600",
+            family: "'Inter', system-ui, sans-serif",
+          },
+          bodyFont: {
+            size: 12,
+            family: "'Inter', system-ui, sans-serif",
+          },
+          displayColors: true,
           callbacks: {
             label: (context) => {
               const label = context.dataset.label || "";
@@ -1234,8 +1337,15 @@ async function loadMultiStrategies() {
       if (index === 0) option.selected = true;
       multiStrategySelect.appendChild(option);
     });
+
+    // Render param fields for the first strategy
+    if (items.length > 0) {
+      renderMultiParamFields(items[0].name);
+    }
   } catch (err) {
-    setOutput(multiStatus, `Error: ${err.message}`);
+    if (multiStatus) {
+      multiStatus.innerHTML = `<p class="muted">Error: ${err.message}</p>`;
+    }
   }
 }
 
@@ -1250,6 +1360,111 @@ function parseParamRanges(raw) {
   } catch (err) {
     throw new Error("Parameter ranges must be valid JSON object.");
   }
+}
+
+function renderMultiParamFields(strategyName) {
+  if (!multiParamRangesFields) return;
+  multiParamRangesFields.innerHTML = "";
+
+  const strategy = singleStrategies.find((entry) => entry.name === strategyName);
+  if (!strategy || !strategy.parameters || !strategy.parameters.properties) {
+    multiParamRangesFields.innerHTML = '<p class="field-help muted">No tunable parameters for this strategy.</p>';
+    return;
+  }
+
+  const { properties } = strategy.parameters;
+  const fields = Object.entries(properties)
+    .map(([name, schema]) => {
+      const title = schema.title || humanize(name);
+      const description = schema.description ? `<p class="field-help">${schema.description}</p>` : "";
+      const type = schema.type || "string";
+      const placeholder = type === "integer" || type === "number"
+        ? "e.g. 2,4,6 or 2-10:2"
+        : "Comma-separated values";
+
+      return `
+        <label>
+          ${title}
+          <input name="${name}" type="text" data-param="${name}" data-type="${type}" placeholder="${placeholder}">
+          <p class="field-help">Enter comma-separated values or ranges (start-end[:step]). Leave blank to use strategy defaults.</p>
+          ${description}
+        </label>
+      `;
+    })
+    .join("");
+
+  multiParamRangesFields.innerHTML = fields;
+}
+
+function collectMultiParamRanges() {
+  if (!multiParamRangesFields) return {};
+  const params = {};
+  const fields = multiParamRangesFields.querySelectorAll("[data-param]");
+
+  fields.forEach((field) => {
+    const name = field.dataset.param;
+    const type = field.dataset.type || "string";
+
+    if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+      const raw = field.value.trim();
+      if (!raw) return;
+      try {
+        const values = parseRangeValues(raw, type);
+        if (values.length) {
+          params[name] = values;
+        }
+      } catch (err) {
+        throw err;
+      }
+    }
+  });
+
+  return params;
+}
+
+async function autoPopulateRanges() {
+  if (!multiStrategySelect || !multiParamRangesFields || !autoPopulateBtn) return;
+
+  const strategyName = multiStrategySelect.value;
+  if (!strategyName) {
+    alert("Please select a strategy first.");
+    return;
+  }
+
+  const strategy = singleStrategies.find((entry) => entry.name === strategyName);
+  if (!strategy || !strategy.parameters || !strategy.parameters.properties) {
+    alert("This strategy has no tunable parameters.");
+    return;
+  }
+
+  const { properties } = strategy.parameters;
+
+  // Auto-populate with default values as ranges
+  Object.entries(properties).forEach(([name, schema]) => {
+    const field = multiParamRangesFields.querySelector(`[data-param="${name}"]`);
+    if (!field || !(field instanceof HTMLInputElement)) return;
+
+    const defaultValue = schema.default;
+    if (defaultValue === undefined || defaultValue === null) return;
+
+    const type = schema.type || "string";
+
+    if (type === "integer" || type === "number") {
+      // Create a small range around the default value
+      const step = type === "integer" ? 1 : 0.5;
+      const start = Math.max(0, defaultValue - step * 2);
+      const end = defaultValue + step * 2;
+      field.value = `${start}-${end}:${step}`;
+    } else if (type === "boolean") {
+      field.value = "true,false";
+    } else if (Array.isArray(schema.enum)) {
+      field.value = schema.enum.join(",");
+    } else {
+      field.value = String(defaultValue);
+    }
+  });
+
+  alert("Parameter ranges auto-populated! Review and adjust as needed.");
 }
 
 async function applyMultiConfig(event) {
@@ -1269,14 +1484,18 @@ async function applyMultiConfig(event) {
   };
 
   try {
-    payload.param_ranges = parseParamRanges(formData.get("param_ranges") || "{}");
+    payload.param_ranges = collectMultiParamRanges();
   } catch (err) {
-    setOutput(multiStatus, `Error: ${err.message}`);
+    if (multiStatus) {
+      multiStatus.innerHTML = `<p class="muted">Error: ${err.message}</p>`;
+    }
     return;
   }
 
   if (!payload.symbols.length) {
-    setOutput(multiStatus, "Error: Provide at least one symbol.");
+    if (multiStatus) {
+      multiStatus.innerHTML = `<p class="muted">Error: Provide at least one symbol.</p>`;
+    }
     return;
   }
 
@@ -1285,18 +1504,110 @@ async function applyMultiConfig(event) {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    setOutput(multiStatus, jsonStringify(result.status));
+    renderStatusDisplay(result.status);
   } catch (err) {
-    setOutput(multiStatus, `Error: ${err.message}`);
+    if (multiStatus) {
+      multiStatus.innerHTML = `<p class="muted">Error: ${err.message}</p>`;
+    }
   }
+}
+
+function renderStatusDisplay(status) {
+  if (!multiStatus) return;
+  multiStatus.innerHTML = "";
+
+  if (!status || typeof status !== "object") {
+    multiStatus.dataset.empty = "Configure or start the runner to see status.";
+    return;
+  }
+
+  multiStatus.removeAttribute("data-empty");
+
+  const items = [];
+
+  // Runner state
+  const state = status.state || "idle";
+  let stateBadge = `<span class="status-badge ${state}">${state.toUpperCase()}</span>`;
+  items.push({ label: "Runner State", value: stateBadge, isHtml: true });
+
+  // Strategy
+  if (status.strategy) {
+    items.push({ label: "Strategy", value: status.strategy, class: "highlight" });
+  }
+
+  // Test Name / Config Name
+  if (status.test_name) {
+    items.push({ label: "Config Name", value: status.test_name, class: "highlight" });
+  }
+
+  // Job counts
+  if (status.total_jobs !== undefined) {
+    items.push({ label: "Total Jobs", value: status.total_jobs.toLocaleString() });
+  }
+  if (status.pending_jobs !== undefined) {
+    items.push({ label: "Pending Jobs", value: status.pending_jobs.toLocaleString() });
+  }
+  if (status.completed_jobs !== undefined) {
+    const completedClass = status.completed_jobs > 0 ? "success" : "";
+    items.push({ label: "Completed Jobs", value: status.completed_jobs.toLocaleString(), class: completedClass });
+  }
+
+  // Progress percentage
+  if (status.total_jobs && status.total_jobs > 0) {
+    const progress = ((status.completed_jobs || 0) / status.total_jobs * 100).toFixed(1);
+    items.push({ label: "Progress", value: `${progress}%`, class: "highlight" });
+  }
+
+  // Workers
+  if (status.max_workers) {
+    items.push({ label: "Max Workers", value: status.max_workers });
+  }
+
+  // Database stats
+  if (status.database) {
+    const db = status.database;
+    const dbHtml = `
+      <div class="status-nested">
+        <div class="status-nested-title">Database Stats</div>
+        ${db.total_rows !== undefined ? `<div class="status-nested-item"><span>Total Rows</span><span>${db.total_rows.toLocaleString()}</span></div>` : ""}
+        ${db.table_size ? `<div class="status-nested-item"><span>Table Size</span><span>${db.table_size}</span></div>` : ""}
+        ${db.index_size ? `<div class="status-nested-item"><span>Index Size</span><span>${db.index_size}</span></div>` : ""}
+      </div>
+    `;
+    items.push({ label: "Database", value: dbHtml, isHtml: true });
+  }
+
+  // Render items
+  items.forEach(item => {
+    const div = document.createElement("div");
+    div.className = "status-item";
+
+    const label = document.createElement("div");
+    label.className = "status-label";
+    label.textContent = item.label;
+
+    const value = document.createElement("div");
+    value.className = `status-value ${item.class || ""}`;
+    if (item.isHtml) {
+      value.innerHTML = item.value;
+    } else {
+      value.textContent = item.value;
+    }
+
+    div.appendChild(label);
+    div.appendChild(value);
+    multiStatus.appendChild(div);
+  });
 }
 
 async function updateMultiStatus() {
   try {
     const status = await fetchJSON("/api/multi/status");
-    setOutput(multiStatus, jsonStringify(status));
+    renderStatusDisplay(status);
   } catch (err) {
-    setOutput(multiStatus, `Error: ${err.message}`);
+    if (multiStatus) {
+      multiStatus.innerHTML = `<p class="muted">Error: ${err.message}</p>`;
+    }
   }
 }
 
@@ -1304,18 +1615,20 @@ async function controlRunner(endpoint, button) {
   setBusy(button, true);
   try {
     const result = await fetchJSON(`/api/multi/${endpoint}`, { method: "POST" });
-    setOutput(multiStatus, jsonStringify(result.status));
+    renderStatusDisplay(result.status);
   } catch (err) {
-    setOutput(multiStatus, `Error: ${err.message}`);
+    if (multiStatus) {
+      multiStatus.innerHTML = `<p class="muted">Error: ${err.message}</p>`;
+    }
   } finally {
     setBusy(button, false);
   }
 }
 
-function renderHistory(rows) {
+function renderHistory(batches) {
   const tbody = historyTable.querySelector("tbody");
   tbody.innerHTML = "";
-  if (!rows.length) {
+  if (!batches || !batches.length) {
     const tr = document.createElement("tr");
     tr.className = "empty";
     const td = document.createElement("td");
@@ -1326,29 +1639,321 @@ function renderHistory(rows) {
     return;
   }
 
-  rows.forEach((row) => {
+  batches.forEach((batch) => {
     const tr = document.createElement("tr");
-    const created = new Date(row.created_at).toLocaleString();
-    const params = jsonStringify(row.params);
-    const summary = jsonStringify(row.summary);
+
+    const started = new Date(batch.started_at).toLocaleString("en-IN", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+    const ended = new Date(batch.ended_at).toLocaleString("en-IN", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+    // Create action buttons
+    const actionsCell = document.createElement("td");
+    const actionsDiv = document.createElement("div");
+    actionsDiv.className = "action-buttons";
+
+    const exportBtn = document.createElement("button");
+    exportBtn.className = "action-btn secondary";
+    exportBtn.textContent = "Export CSV";
+    exportBtn.onclick = () => exportBatch(batch.batch_id);
+
+    const viewBtn = document.createElement("button");
+    viewBtn.className = "action-btn";
+    viewBtn.textContent = "View";
+    viewBtn.onclick = () => viewBatchDetails(batch.batch_id, batch.test_name);
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "action-btn danger";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.onclick = () => deleteBatch(batch.batch_id, batch.test_name, deleteBtn);
+
+    actionsDiv.append(exportBtn, viewBtn, deleteBtn);
+    actionsCell.appendChild(actionsDiv);
+
     tr.innerHTML = `
-      <td>${created}</td>
-      <td>${row.strategy}</td>
-      <td>${row.symbol}</td>
-      <td>${row.test_name || "—"}</td>
-      <td><pre>${params}</pre></td>
-      <td><pre>${summary}</pre></td>
+      <td><strong>${batch.test_name}</strong></td>
+      <td>${batch.strategy}</td>
+      <td>${started}</td>
+      <td>${ended}</td>
+      <td>${batch.total_runs}</td>
     `;
+    tr.appendChild(actionsCell);
     tbody.appendChild(tr);
   });
 }
 
 async function refreshHistory() {
   try {
-    const rows = await fetchJSON("/api/multi/history");
-    renderHistory(rows);
+    const batches = await fetchJSON("/api/multi/history/batches");
+    renderHistory(batches);
   } catch (err) {
-    setOutput(multiStatus, `Error loading history: ${err.message}`);
+    if (multiStatus) {
+      multiStatus.innerHTML = `<p class="muted">Error loading history: ${err.message}</p>`;
+    }
+  }
+}
+
+function exportBatch(batchId) {
+  const url = `/api/multi/history/export?batch_id=${encodeURIComponent(batchId)}`;
+  window.open(url, "_blank");
+}
+
+async function deleteBatch(batchId, testName, button) {
+  if (!confirm(`Delete batch "${testName}"? This will permanently remove all ${testName} runs from the database.`)) {
+    return;
+  }
+
+  setBusy(button, true);
+  try {
+    const result = await fetchJSON(`/api/multi/history/batch/${encodeURIComponent(batchId)}`, {
+      method: "DELETE",
+    });
+    alert(result.message || `Deleted ${result.deleted_count} rows`);
+    await refreshHistory();
+  } catch (err) {
+    alert(`Failed to delete batch: ${err.message}`);
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+let currentSortColumn = null;
+let currentSortDirection = "asc";
+
+function makeSortableTable(table, data, columns) {
+  const thead = table.querySelector("thead");
+  const tbody = table.querySelector("tbody");
+
+  if (!thead || !tbody) return;
+
+  // Add click handlers to headers
+  const headers = thead.querySelectorAll("th");
+  headers.forEach((th, index) => {
+    th.style.cursor = "pointer";
+    th.onclick = () => sortTableByColumn(table, data, columns, index);
+  });
+
+  // Initial render
+  renderSortedTable(table, data, columns);
+}
+
+function sortTableByColumn(table, data, columns, columnIndex) {
+  const columnKey = columns[columnIndex].key;
+
+  // Toggle sort direction
+  if (currentSortColumn === columnIndex) {
+    currentSortDirection = currentSortDirection === "asc" ? "desc" : "asc";
+  } else {
+    currentSortColumn = columnIndex;
+    currentSortDirection = "asc";
+  }
+
+  // Sort data
+  const sortedData = [...data].sort((a, b) => {
+    let aVal = getNestedValue(a, columnKey);
+    let bVal = getNestedValue(b, columnKey);
+
+    // Handle null/undefined
+    if (aVal == null) aVal = "";
+    if (bVal == null) bVal = "";
+
+    // Numeric comparison
+    if (typeof aVal === "number" && typeof bVal === "number") {
+      return currentSortDirection === "asc" ? aVal - bVal : bVal - aVal;
+    }
+
+    // String comparison
+    const aStr = String(aVal).toLowerCase();
+    const bStr = String(bVal).toLowerCase();
+    if (currentSortDirection === "asc") {
+      return aStr < bStr ? -1 : aStr > bStr ? 1 : 0;
+    } else {
+      return bStr < aStr ? -1 : bStr > aStr ? 1 : 0;
+    }
+  });
+
+  renderSortedTable(table, sortedData, columns);
+}
+
+function getNestedValue(obj, key) {
+  if (key.includes(".")) {
+    const parts = key.split(".");
+    let value = obj;
+    for (const part of parts) {
+      value = value?.[part];
+      if (value === undefined) return null;
+    }
+    return value;
+  }
+  return obj[key];
+}
+
+function renderSortedTable(table, data, columns) {
+  const thead = table.querySelector("thead");
+  const tbody = table.querySelector("tbody");
+
+  // Update header indicators
+  const headers = thead.querySelectorAll("th");
+  headers.forEach((th, index) => {
+    th.classList.remove("sorted-asc", "sorted-desc");
+    if (index === currentSortColumn) {
+      th.classList.add(currentSortDirection === "asc" ? "sorted-asc" : "sorted-desc");
+    }
+  });
+
+  // Render rows
+  tbody.innerHTML = "";
+  data.forEach((row) => {
+    const tr = document.createElement("tr");
+    columns.forEach((col) => {
+      const td = document.createElement("td");
+      let value = getNestedValue(row, col.key);
+
+      if (col.format) {
+        value = col.format(value, row);
+      } else if (value === null || value === undefined) {
+        value = "—";
+      } else if (typeof value === "object") {
+        value = JSON.stringify(value);
+      }
+
+      // Apply cell class if specified
+      if (col.cellClass) {
+        const className = typeof col.cellClass === "function"
+          ? col.cellClass(value, row)
+          : col.cellClass;
+        if (className) td.className = className;
+      }
+
+      td.innerHTML = value;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+async function viewBatchDetails(batchId, testName) {
+  if (!batchModal || !batchModalBody || !batchModalTitle) return;
+
+  batchModalTitle.textContent = `Batch: ${testName}`;
+  batchModalBody.innerHTML = '<p class="muted">Loading batch details...</p>';
+  batchModal.classList.remove("hidden");
+
+  try {
+    const rows = await fetchJSON(`/api/multi/history/batch/${encodeURIComponent(batchId)}`);
+
+    if (!rows || rows.length === 0) {
+      batchModalBody.innerHTML = '<p class="muted">No runs found in this batch.</p>';
+      return;
+    }
+
+    // Flatten params and summary for table display
+    const flatRows = rows.map(row => {
+      const flat = {
+        symbol: row.symbol,
+        exchange: row.exchange,
+        interval: row.interval,
+        created_at: row.created_at,
+      };
+
+      // Add params
+      Object.entries(row.params || {}).forEach(([key, value]) => {
+        flat[`param_${key}`] = value;
+      });
+
+      // Add summary
+      Object.entries(row.summary || {}).forEach(([key, value]) => {
+        flat[`summary_${key}`] = value;
+      });
+
+      return flat;
+    });
+
+    // Build columns dynamically
+    const allKeys = new Set();
+    flatRows.forEach(row => Object.keys(row).forEach(key => allKeys.add(key)));
+
+    const columns = Array.from(allKeys).map(key => ({
+      key,
+      label: humanize(key),
+      format: (value) => {
+        if (key === "created_at") {
+          return formatTimestamp(value);
+        }
+        if (key.includes("rupees") || key.includes("pnl")) {
+          return typeof value === "number" ? `₹${formatMoney(value)}` : value;
+        }
+        if (key.endsWith("_percent")) {
+          return typeof value === "number" ? `${value.toFixed(2)}%` : value;
+        }
+        return typeof value === "number" ? formatValue(value) : value;
+      },
+      cellClass: (value) => {
+        // Special styling for target columns
+        if (key.includes("target") && !key.includes("rupees") && !key.includes("pnl")) {
+          return "target-value";
+        }
+        // Special styling for stoploss columns
+        if ((key.includes("stoploss") || key.includes("stop_loss")) && !key.includes("rupees") && !key.includes("pnl")) {
+          return "stoploss-value";
+        }
+        // Standard profit/loss coloring
+        if ((key.includes("rupees") || key.includes("pnl")) && typeof value === "number") {
+          return value >= 0 ? "positive" : "negative";
+        }
+        return "";
+      }
+    }));
+
+    // Create table
+    const table = document.createElement("table");
+    table.className = "sortable-table";
+
+    const thead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    columns.forEach(col => {
+      const th = document.createElement("th");
+      th.textContent = col.label;
+      headerRow.appendChild(th);
+    });
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    table.appendChild(tbody);
+
+    batchModalBody.innerHTML = "";
+    batchModalBody.appendChild(table);
+
+    // Make table sortable
+    currentSortColumn = null;
+    currentSortDirection = "asc";
+    makeSortableTable(table, flatRows, columns);
+
+  } catch (err) {
+    batchModalBody.innerHTML = `<p class="muted">Error: ${err.message}</p>`;
+  }
+}
+
+function closeBatchModal() {
+  if (batchModal) {
+    batchModal.classList.add("hidden");
+    if (batchModalBody) {
+      batchModalBody.innerHTML = "";
+    }
   }
 }
 
@@ -1485,9 +2090,26 @@ if (inventoryModal) {
   });
 }
 
+if (batchModalClose) {
+  batchModalClose.addEventListener("click", closeBatchModal);
+}
+
+if (batchModal) {
+  batchModal.addEventListener("click", (event) => {
+    if (event.target === batchModal) {
+      closeBatchModal();
+    }
+  });
+}
+
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && inventoryModal && !inventoryModal.classList.contains("hidden")) {
-    closeInventoryModal();
+  if (event.key === "Escape") {
+    if (inventoryModal && !inventoryModal.classList.contains("hidden")) {
+      closeInventoryModal();
+    }
+    if (batchModal && !batchModal.classList.contains("hidden")) {
+      closeBatchModal();
+    }
   }
 });
 
@@ -1529,6 +2151,12 @@ if (multiResetBtn) multiResetBtn.addEventListener("click", () => controlRunner("
 if (multiClearBtn) multiClearBtn.addEventListener("click", () => controlRunner("clear-results", multiClearBtn));
 if (multiRefreshBtn) multiRefreshBtn.addEventListener("click", updateMultiStatus);
 if (multiHistoryBtn) multiHistoryBtn.addEventListener("click", refreshHistory);
+if (autoPopulateBtn) autoPopulateBtn.addEventListener("click", autoPopulateRanges);
+if (multiStrategySelect) {
+  multiStrategySelect.addEventListener("change", (event) => {
+    renderMultiParamFields(event.target.value);
+  });
+}
 
 // --- Initial load ------------------------------------------------------------
 

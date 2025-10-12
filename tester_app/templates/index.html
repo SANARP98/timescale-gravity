@@ -30,8 +30,13 @@
         <div id="config-form" class="config-form hidden">
           <div class="config-grid">
             <div class="config-group">
-              <label>Symbols (comma-separated)</label>
-              <input type="text" id="symbols" value="NIFTY28OCT2525200CE,NIFTY28OCT2525200PE" />
+              <label>Batch Name</label>
+              <input type="text" id="test-name" placeholder="Optional label (e.g. Morning Sweep)" />
+            </div>
+
+            <div class="config-group">
+              <label>Symbols (comma or newline separated)</label>
+              <textarea id="symbols" rows="2">NIFTY28OCT2525200CE,NIFTY28OCT2525200PE</textarea>
             </div>
 
             <div class="config-group">
@@ -61,43 +66,16 @@
           </div>
 
           <h3>Parameter Ranges</h3>
-          <div class="config-grid">
-            <div class="config-group">
-              <label>Target Points (min-max)</label>
-              <div class="range-inputs">
-                <input type="number" id="target-min" value="2" min="1" step="0.5" />
-                <span>to</span>
-                <input type="number" id="target-max" value="10" min="1" step="0.5" />
+          <div class="param-helper">
+            <div id="param-fields" class="config-grid"></div>
+            <div class="param-preview">
+              <label for="param-json-preview">Parameter Ranges JSON</label>
+              <textarea id="param-json-preview" readonly rows="10" placeholder="Adjust parameter inputs to generate JSON"></textarea>
+              <div class="param-buttons">
+                <button type="button" id="param-copy-btn" class="secondary">Copy JSON</button>
+                <button type="button" id="param-reset-btn" class="secondary">Reset Parameters</button>
               </div>
-            </div>
-
-            <div class="config-group">
-              <label>Stoploss Points (min-max)</label>
-              <div class="range-inputs">
-                <input type="number" id="stoploss-min" value="2" min="1" step="0.5" />
-                <span>to</span>
-                <input type="number" id="stoploss-max" value="10" min="1" step="0.5" />
-              </div>
-            </div>
-
-            <div class="config-group">
-              <label>EMA Fast (comma-separated)</label>
-              <input type="text" id="ema-fast" value="3,5" />
-            </div>
-
-            <div class="config-group">
-              <label>EMA Slow (comma-separated)</label>
-              <input type="text" id="ema-slow" value="10,20" />
-            </div>
-
-            <div class="config-group">
-              <label>ATR Min (comma-separated)</label>
-              <input type="text" id="atr-min" value="1,2,3" />
-            </div>
-
-            <div class="config-group">
-              <label>Daily Loss Cap (comma-separated)</label>
-              <input type="text" id="daily-loss-cap" value="-1000,-1500,-2000,-2500,-3000" />
+              <p class="param-hint">Values accept comma lists or ranges like <code>2-10:2</code>. Leave blank to use strategy defaults.</p>
             </div>
           </div>
 
@@ -142,6 +120,11 @@
         <h2>Previous Runs</h2>
         <p id="history-status" class="history-status">Loading…</p>
         <div class="history-actions">
+          <div class="history-filter">
+            <input type="text" id="history-filter" placeholder="Filter by batch name" />
+            <button id="history-filter-btn" class="secondary" type="button">Apply</button>
+            <button id="history-filter-clear-btn" class="secondary" type="button">Clear</button>
+          </div>
           <button id="history-export-all-btn" class="secondary">Export All Runs</button>
         </div>
         <div class="history-table-wrapper">
@@ -151,6 +134,7 @@
                 <th class="sortable" data-sort="created_at">Created <span class="sort-indicator"></span></th>
                 <th class="sortable" data-sort="strategy">Strategy <span class="sort-indicator"></span></th>
                 <th class="sortable" data-sort="symbol">Symbol <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="test_name">Batch <span class="sort-indicator"></span></th>
                 <th class="sortable" data-sort="target">Target / Stop <span class="sort-indicator"></span></th>
                 <th class="sortable" data-sort="ema">EMA (fast/slow) <span class="sort-indicator"></span></th>
                 <th class="sortable" data-sort="atr">ATR Min <span class="sort-indicator"></span></th>

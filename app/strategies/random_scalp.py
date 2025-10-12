@@ -29,8 +29,9 @@ class StrategyParams(BaseModel):
     trade_every_n_bars: int = Field(
         1,
         ge=1,
+        le=1000,
         title="Trade Every N Bars",
-        description="Take a new position once every N bars.",
+        description="Take a new position once every N bars. Must be >= 1.",
     )
     profit_target_rupees: float = Field(
         1.0,
@@ -61,6 +62,16 @@ class StrategyParams(BaseModel):
         ge=0,
         title="Slippage (₹)",
         description="Additional slippage applied per round-trip.",
+    )
+    close_at_bar_close: bool = Field(
+        True,
+        title="Close at Bar Close",
+        description="If enabled, closes position at bar close if target/SL not hit. If disabled, position carries forward to next bar.",
+    )
+    wait_for_exit: bool = Field(
+        False,
+        title="Wait for Position Exit",
+        description="If enabled, waits for current position to exit before opening new position. If disabled, allows new entries every N bars.",
     )
 
 
@@ -123,6 +134,10 @@ class RandomScalpRunner:
         return [sym for sym in (pe_symbol, ce_symbol) if sym]
 
     def _load_ohlcv(self, symbol: str) -> pd.DataFrame:
+        """Load OHLCV data from DB, auto-fetching if missing."""
+        import logging
+        logger = logging.getLogger(__name__)
+
         df = read_ohlcv_from_tsdb(
             symbol=symbol,
             exchange=self.exchange,
@@ -130,6 +145,34 @@ class RandomScalpRunner:
             start_ts=self.start,
             end_ts=self.end,
         )
+
+        # If data is empty, try to fetch it automatically
+        if df.empty:
+            logger.info(f"RandomScalp: No data found for {symbol}. Attempting auto-fetch...")
+            try:
+                from tsdb_pipeline import fetch_history_to_tsdb
+
+                rows = fetch_history_to_tsdb(
+                    symbol=symbol,
+                    exchange=self.exchange,
+                    interval=self.interval,
+                    start_date=self.start,
+                    end_date=self.end,
+                )
+                logger.info(f"RandomScalp: Auto-fetched {rows} rows for {symbol}")
+
+                # Try reading again
+                df = read_ohlcv_from_tsdb(
+                    symbol=symbol,
+                    exchange=self.exchange,
+                    interval=self.interval,
+                    start_ts=self.start,
+                    end_ts=self.end,
+                )
+            except Exception as exc:
+                logger.error(f"RandomScalp: Auto-fetch failed for {symbol}: {exc}")
+                return pd.DataFrame()
+
         if df.empty:
             return df
         return df[["open", "high", "low", "close", "volume", "oi"]].copy()
@@ -147,30 +190,130 @@ class RandomScalpRunner:
         qty_rupees = float(self.qty_per_point) * qty_multiplier
         broker_fee = float(self.params.brokerage_per_trade) * 2 * qty_multiplier
         slippage = float(self.params.slippage_rupees) * qty_multiplier
+        close_at_bar_close = bool(self.params.close_at_bar_close)
+        wait_for_exit = bool(self.params.wait_for_exit)
 
         if df.empty:
+            import logging
+            logging.warning(f"RandomScalp: No data loaded for {symbol}")
             return trades
 
+        import logging
+        logging.info(f"RandomScalp: Simulating {symbol} with {len(df)} bars, trade_gap={trade_gap}")
+
+        # Track open position
+        open_position = None
+        bars_since_entry = 0
+
         for idx, (ts, row) in enumerate(df.iterrows()):
-            if idx % trade_gap != 0:
-                continue
+            # If we have an open position, check for exit
+            if open_position is not None:
+                bars_since_entry += 1
+                entry_price = open_position["entry_price"]
+                entry_time = open_position["entry_time"]
+                target_price = entry_price + profit_target
+                stop_price = entry_price - stop_loss if stop_loss > 0 else None
 
-            entry_price = float(row["open"])
-            target_price = entry_price + profit_target
-            stop_price = entry_price - stop_loss if stop_loss > 0 else None
+                high = float(row["high"])
+                low = float(row["low"])
 
-            high = float(row["high"])
-            low = float(row["low"])
+                exit_price = None
+                exit_reason = None
 
-            exit_price = float(row["close"])
-            exit_reason = "Close @ Bar End"
+                # Check if target or stoploss hit
+                if high >= target_price:
+                    exit_price = target_price
+                    exit_reason = "Target Hit"
+                elif stop_price is not None and low <= stop_price:
+                    exit_price = stop_price
+                    exit_reason = "Stoploss Hit"
+                elif close_at_bar_close:
+                    # Close at bar close if option is enabled
+                    exit_price = float(row["close"])
+                    exit_reason = "Close @ Bar End"
 
-            if high >= target_price:
-                exit_price = target_price
-                exit_reason = "Target Hit"
-            elif stop_price is not None and low <= stop_price:
-                exit_price = stop_price
-                exit_reason = "Stoploss Hit"
+                # If we have an exit, record the trade
+                if exit_price is not None:
+                    pnl_points = exit_price - entry_price
+                    gross = pnl_points * qty_rupees
+                    costs = broker_fee + slippage
+                    pnl = gross - costs
+                    equity += pnl
+
+                    trades.append(
+                        TradeResult(
+                            entry_time=entry_time,
+                            exit_time=ts,
+                            symbol=symbol,
+                            side="LONG",
+                            entry=entry_price,
+                            exit=exit_price,
+                            gross_rupees=gross,
+                            costs_rupees=costs,
+                            pnl_rupees=pnl,
+                            exit_reason=exit_reason,
+                            cumulative_equity=equity,
+                        )
+                    )
+                    open_position = None
+                    bars_since_entry = 0
+
+            # Check if we should enter a new position
+            should_enter = False
+            if open_position is None:
+                # No open position
+                if idx % trade_gap == 0:
+                    should_enter = True
+            elif not wait_for_exit:
+                # Have open position but wait_for_exit is False
+                if idx % trade_gap == 0:
+                    should_enter = True
+
+            if should_enter:
+                # If wait_for_exit is False and we have an open position, close it first
+                if open_position is not None and not wait_for_exit:
+                    entry_price = open_position["entry_price"]
+                    entry_time = open_position["entry_time"]
+                    exit_price = float(row["open"])
+                    exit_reason = "Forced Exit (New Entry)"
+
+                    pnl_points = exit_price - entry_price
+                    gross = pnl_points * qty_rupees
+                    costs = broker_fee + slippage
+                    pnl = gross - costs
+                    equity += pnl
+
+                    trades.append(
+                        TradeResult(
+                            entry_time=entry_time,
+                            exit_time=ts,
+                            symbol=symbol,
+                            side="LONG",
+                            entry=entry_price,
+                            exit=exit_price,
+                            gross_rupees=gross,
+                            costs_rupees=costs,
+                            pnl_rupees=pnl,
+                            exit_reason=exit_reason,
+                            cumulative_equity=equity,
+                        )
+                    )
+
+                # Open new position
+                entry_price = float(row["open"])
+                open_position = {
+                    "entry_price": entry_price,
+                    "entry_time": ts,
+                }
+                bars_since_entry = 0
+
+        # Close any remaining open position at the end
+        if open_position is not None:
+            last_row = df.iloc[-1]
+            entry_price = open_position["entry_price"]
+            entry_time = open_position["entry_time"]
+            exit_price = float(last_row["close"])
+            exit_reason = "End of Data"
 
             pnl_points = exit_price - entry_price
             gross = pnl_points * qty_rupees
@@ -180,8 +323,8 @@ class RandomScalpRunner:
 
             trades.append(
                 TradeResult(
-                    entry_time=ts,
-                    exit_time=ts,
+                    entry_time=entry_time,
+                    exit_time=df.index[-1],
                     symbol=symbol,
                     side="LONG",
                     entry=entry_price,
@@ -199,7 +342,12 @@ class RandomScalpRunner:
     # ---------- Public API ----------
 
     def run(self, write_csv: bool = False) -> Dict[str, Any]:
+        import logging
+        logger = logging.getLogger(__name__)
+
         symbols = self._determine_symbols()
+        logger.info(f"RandomScalp: Resolved symbols: {symbols}")
+
         if not symbols:
             return {
                 "data": {},
@@ -214,24 +362,32 @@ class RandomScalpRunner:
         combined_data: Dict[str, pd.DataFrame] = {}
 
         for sym in symbols:
+            logger.info(f"RandomScalp: Loading data for {sym}")
             df = self._load_ohlcv(sym)
+            logger.info(f"RandomScalp: Loaded {len(df) if not df.empty else 0} bars for {sym}")
+
             if df.empty:
+                logger.warning(f"RandomScalp: No data found for {sym}")
                 continue
 
             combined_data[sym] = df
             trades = self._simulate_symbol(sym, df)
+            logger.info(f"RandomScalp: Generated {len(trades)} trades for {sym}")
+
             if trades:
                 trades_df = pd.DataFrame([t.__dict__ for t in trades])
                 all_trades.append(trades_df)
 
         if not all_trades:
+            msg = f"⚠️ No trades generated. Loaded data for {len(combined_data)} symbols, but no trades occurred. Check parameters."
+            logger.warning(f"RandomScalp: {msg}")
             return {
                 "data": combined_data,
                 "trades": pd.DataFrame(),
                 "summary": None,
                 "daily_stats": [],
                 "output_csv": None,
-                "message": "⚠️ No trades generated for the selected window.",
+                "message": msg,
             }
 
         trades_df = pd.concat(all_trades, ignore_index=True)

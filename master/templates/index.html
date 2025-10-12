@@ -74,6 +74,14 @@
                   <option value="ce">CE only</option>
                 </select>
               </label>
+              <label>
+                Trade Direction
+                <select name="trade_direction">
+                  <option value="both" selected>Both (Long & Short)</option>
+                  <option value="long_only">Long Only</option>
+                  <option value="short_only">Short Only</option>
+                </select>
+              </label>
               <label>Starting Capital <input type="number" name="starting_capital" value="100000" step="1000"></label>
               <label>Qty per Point <input type="number" name="qty_per_point" value="150"></label>
               <label>Last N Trades <input type="number" name="last_n_trades" value="10" min="1" max="200"></label>
@@ -91,7 +99,7 @@
                   <option value="">Loading…</option>
                 </select>
               </label>
-              <label>Test Name <input name="test_name" placeholder="e.g. Morning Batch"></label>
+              <label>Custom Config Name <input name="test_name" placeholder="e.g. Morning Batch, High Targets"></label>
               <label class="span-two">Symbols (comma or newline separated)
                 <textarea name="symbols" rows="3" placeholder="NIFTY28OCT2525200CE&#10;NIFTY28OCT2525200PE"></textarea>
               </label>
@@ -118,16 +126,19 @@
               <div id="exit-reasons" class="table-scroll" data-empty="Run a backtest to see exit breakdown."></div>
             </section>
             <section>
-              <h3>Trades</h3>
-              <div id="backtest-trades" class="table-scroll" data-empty="Run a backtest to list trades."></div>
-            </section>
-            <section>
-              <h3>Daily Stats</h3>
-              <div class="chart-container">
+              <h3>Daily Performance Chart</h3>
+              <div class="chart-container-compact">
                 <p id="daily-chart-empty" class="muted">Run a backtest to visualize daily performance.</p>
                 <canvas id="daily-chart" class="hidden" aria-label="Daily net P&L chart"></canvas>
               </div>
+            </section>
+            <section>
+              <h3>Daily Stats</h3>
               <div id="daily-stats-table" class="table-scroll" data-empty="No daily stats available."></div>
+            </section>
+            <section>
+              <h3>Trades</h3>
+              <div id="backtest-trades" class="table-scroll" data-empty="Run a backtest to list trades."></div>
             </section>
           </div>
         </section>
@@ -145,7 +156,7 @@
                 <option value="">Loading…</option>
               </select>
             </label>
-            <label>Batch Name <input type="text" name="test_name" placeholder="e.g. Weekly Sweep"></label>
+            <label>Custom Config Name <input type="text" name="test_name" placeholder="e.g. High Target Sweep, Morning Strategy"></label>
             <label>Exchange <input type="text" name="exchange" value="NFO" required></label>
             <label>Interval <input type="text" name="interval" value="5m" required></label>
             <label>Symbols (comma separated) <input type="text" name="symbols" value="NIFTY28OCT2525200CE,NIFTY28OCT2525200PE"></label>
@@ -154,7 +165,11 @@
             <label>Starting Capital <input type="number" name="starting_capital" value="100000" step="1000" required></label>
             <label>Qty per Point <input type="number" name="qty_per_point" value="150" required></label>
             <label>Max Workers <input type="number" name="max_workers" value="2" min="1" max="16" required></label>
-            <label>Parameter Ranges (JSON) <textarea name="param_ranges" rows="6" placeholder='{"target_points": [4,5,6]}'></textarea></label>
+            <div id="multi-param-ranges-container" class="form-section">
+              <div class="form-section-title">Parameter Ranges</div>
+              <div id="multi-param-ranges-fields" class="form-section-fields"></div>
+              <button type="button" id="auto-populate-ranges" class="secondary">Auto-Populate from Strategy</button>
+            </div>
             <button type="submit">Apply Configuration</button>
           </form>
         </section>
@@ -168,24 +183,24 @@
             <button id="multi-clear">Clear Results</button>
             <button id="multi-refresh">Refresh Status</button>
           </div>
-          <pre id="multi-status" class="output" data-empty="Configure or start the runner."></pre>
+          <div id="multi-status-display" class="status-display"></div>
         </section>
 
         <section class="card wide">
           <div class="controls">
             <h2>History</h2>
             <button id="multi-history-refresh">Refresh</button>
-            <a id="multi-history-export" class="link-button" href="/api/multi/history/export" target="_blank" rel="noopener">Export CSV</a>
+            <a id="multi-history-export-all" class="link-button" href="/api/multi/history/export" target="_blank" rel="noopener">Export All CSV</a>
           </div>
           <table id="history-table">
             <thead>
               <tr>
-                <th>Created</th>
+                <th>Batch Name</th>
                 <th>Strategy</th>
-                <th>Symbol</th>
-                <th>Batch</th>
-                <th>Params</th>
-                <th>Summary</th>
+                <th>Started</th>
+                <th>Ended</th>
+                <th>Total Runs</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -211,6 +226,18 @@
       </header>
       <div class="modal-body">
         <div id="modal-body-content" class="table-scroll" data-empty="Select a slice to preview rows."></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="batch-detail-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-content modal-large">
+      <header class="modal-header">
+        <h3 id="batch-modal-title">Batch Details</h3>
+        <button id="batch-modal-close" aria-label="Close">&times;</button>
+      </header>
+      <div class="modal-body">
+        <div id="batch-modal-body" class="table-scroll" data-empty="Loading batch details..."></div>
       </div>
     </div>
   </div>

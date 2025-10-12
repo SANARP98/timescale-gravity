@@ -101,7 +101,33 @@ class BacktestRunner:
         self.df = pd.DataFrame()
 
     def load_data_from_db(self, symbol: str) -> pd.DataFrame:
+        """Load OHLCV data from DB, auto-fetching if missing."""
+        import logging
+        logger = logging.getLogger(__name__)
+
         data = read_ohlcv_from_tsdb(symbol, self.exchange, self.interval, self.date_from, self.date_to)
+
+        # If data is empty, try to fetch it automatically
+        if data.empty:
+            logger.info(f"ScalpWithTrend: No data found for {symbol}. Attempting auto-fetch...")
+            try:
+                from tsdb_pipeline import fetch_history_to_tsdb
+
+                rows = fetch_history_to_tsdb(
+                    symbol=symbol,
+                    exchange=self.exchange,
+                    interval=self.interval,
+                    start_date=self.date_from,
+                    end_date=self.date_to,
+                )
+                logger.info(f"ScalpWithTrend: Auto-fetched {rows} rows for {symbol}")
+
+                # Try reading again
+                data = read_ohlcv_from_tsdb(symbol, self.exchange, self.interval, self.date_from, self.date_to)
+            except Exception as exc:
+                logger.error(f"ScalpWithTrend: Auto-fetch failed for {symbol}: {exc}")
+                return pd.DataFrame()
+
         if data.empty:
             return data
         return data[["close", "high", "low", "oi", "open", "volume"]].copy()
