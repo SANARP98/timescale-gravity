@@ -66,6 +66,7 @@ services:
       PGPASSWORD: postgres
       PGDATABASE: trading
       TESTER_MAX_WORKERS: "${TESTER_MAX_WORKERS:-4}"
+      PYTHONPATH: /app
     deploy:
       resources:
         limits:
@@ -80,6 +81,7 @@ services:
       - .:/app
       - ./exports:/tmp
     restart: unless-stopped
+    command: ["uvicorn", "tester_app.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload"]
 
   # cloudbeaver:
   #   image: dbeaver/cloudbeaver:latest

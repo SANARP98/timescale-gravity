@@ -10,9 +10,19 @@ const dbStatsEl = document.getElementById("db-stats");
 const historyStatus = document.getElementById("history-status");
 const historyTableBody = document.querySelector("#history-table tbody");
 const historyExportAllBtn = document.getElementById("history-export-all-btn");
+const toggleConfigBtn = document.getElementById("toggle-config-btn");
+const configForm = document.getElementById("config-form");
+const applyConfigBtn = document.getElementById("apply-config-btn");
+const resetConfigBtn = document.getElementById("reset-config-btn");
+const configInfo = document.getElementById("config-info");
+const strategySelect = document.getElementById("strategy-select");
+const strategyDescription = document.getElementById("strategy-description");
 
 let statusTimer = null;
 let historyCache = [];
+let currentSort = { column: null, direction: null };
+let availableStrategies = [];
+let currentStrategy = null;
 
 async function postControl(endpoint) {
   const response = await fetch(endpoint, {
@@ -169,9 +179,86 @@ function renderStatus(status) {
   }
 }
 
+function getSortValue(item, column) {
+  const params = item.params || {};
+  const summary = item.summary || {};
+
+  switch(column) {
+    case 'created_at':
+      return new Date(item.created_at).getTime();
+    case 'strategy':
+      return item.strategy || '';
+    case 'symbol':
+      return item.symbol;
+    case 'target':
+      return params.target_points ?? params.target ?? 0;
+    case 'ema':
+      return (params.ema_fast ?? 0) + (params.ema_slow ?? 0);
+    case 'atr':
+      return params.atr_min_points ?? params.atr_min ?? 0;
+    case 'dlc':
+      return params.daily_loss_cap ?? params.dailyLossCap ?? 0;
+    case 'trades':
+      return summary.trades ?? summary.total_trades ?? 0;
+    case 'winrate':
+      return summary.winrate_percent ?? 0;
+    case 'net':
+      return summary.net_rupees ?? 0;
+    default:
+      return 0;
+  }
+}
+
+function sortHistory(column) {
+  if (currentSort.column === column) {
+    // Toggle direction
+    if (currentSort.direction === 'asc') {
+      currentSort.direction = 'desc';
+    } else if (currentSort.direction === 'desc') {
+      // Reset to no sort
+      currentSort.column = null;
+      currentSort.direction = null;
+    } else {
+      currentSort.direction = 'asc';
+    }
+  } else {
+    // New column, start with ascending
+    currentSort.column = column;
+    currentSort.direction = 'asc';
+  }
+
+  if (currentSort.column) {
+    historyCache.sort((a, b) => {
+      const aVal = getSortValue(a, currentSort.column);
+      const bVal = getSortValue(b, currentSort.column);
+
+      if (aVal < bVal) return currentSort.direction === 'asc' ? -1 : 1;
+      if (aVal > bVal) return currentSort.direction === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
+
+  renderHistoryRows();
+  updateSortIndicators();
+}
+
+function updateSortIndicators() {
+  document.querySelectorAll('.history-table th.sortable').forEach(th => {
+    th.classList.remove('sort-asc', 'sort-desc');
+    if (currentSort.column === th.dataset.sort && currentSort.direction) {
+      th.classList.add(`sort-${currentSort.direction}`);
+    }
+  });
+}
+
 function renderHistory(items) {
   if (!historyStatus || !historyTableBody) return;
   historyCache = Array.isArray(items) ? items : [];
+  renderHistoryRows();
+}
+
+function renderHistoryRows() {
+  if (!historyStatus || !historyTableBody) return;
   const noRuns = historyCache.length === 0;
   if (historyExportAllBtn) {
     historyExportAllBtn.disabled = noRuns;
@@ -204,6 +291,7 @@ function renderHistory(items) {
       return `
         <tr data-id="${item.id}">
           <td>${formatDateTime(item.created_at)}</td>
+          <td>${item.strategy || 'Unknown'}</td>
           <td>${item.symbol}</td>
           <td>${formatNumber(target)} / ${formatNumber(stop)}</td>
           <td>${formatNumber(emaFast, 0)} / ${formatNumber(emaSlow, 0)}</td>
@@ -329,6 +417,117 @@ function scheduleStatus() {
   statusTimer = setInterval(refreshStatus, 4000);
 }
 
+async function loadStrategies() {
+  try {
+    const response = await fetch("/strategies");
+    if (!response.ok) throw new Error("Failed to load strategies");
+
+    const data = await response.json();
+    availableStrategies = data.strategies || [];
+
+    if (availableStrategies.length === 0) {
+      strategySelect.innerHTML = '<option value="">No strategies available</option>';
+      return;
+    }
+
+    // Populate dropdown
+    strategySelect.innerHTML = availableStrategies
+      .map(s => `<option value="${s.name}">${s.title}</option>`)
+      .join("");
+
+    // Select first strategy by default
+    currentStrategy = availableStrategies[0];
+    strategySelect.value = currentStrategy.name;
+    updateStrategyDescription();
+
+    logger.info(`Loaded ${availableStrategies.length} strategies`);
+  } catch (error) {
+    console.error("Failed to load strategies:", error);
+    strategySelect.innerHTML = '<option value="">Error loading strategies</option>';
+  }
+}
+
+function updateStrategyDescription() {
+  if (!currentStrategy) return;
+
+  strategyDescription.innerHTML = `
+    <strong>${currentStrategy.title}</strong><br/>
+    ${currentStrategy.description || 'No description available.'}
+  `;
+}
+
+function onStrategyChange() {
+  const selectedName = strategySelect.value;
+  currentStrategy = availableStrategies.find(s => s.name === selectedName);
+
+  if (currentStrategy) {
+    updateStrategyDescription();
+    // TODO: In future, rebuild config form based on strategy parameters
+  }
+}
+
+function parseCommaSeparatedNumbers(value, asFloat = true) {
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => (asFloat ? parseFloat(s) : parseInt(s, 10)))
+    .filter((n) => !isNaN(n));
+}
+
+function getConfigFromForm() {
+  const symbols = document.getElementById("symbols").value
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  return {
+    symbols,
+    start_date: document.getElementById("start-date").value,
+    end_date: document.getElementById("end-date").value,
+    starting_capital: parseFloat(document.getElementById("starting-capital").value),
+    qty_per_point: parseFloat(document.getElementById("qty-per-point").value),
+    max_workers: parseInt(document.getElementById("max-workers").value, 10),
+    target_min: parseFloat(document.getElementById("target-min").value),
+    target_max: parseFloat(document.getElementById("target-max").value),
+    stoploss_min: parseFloat(document.getElementById("stoploss-min").value),
+    stoploss_max: parseFloat(document.getElementById("stoploss-max").value),
+    ema_fast: parseCommaSeparatedNumbers(document.getElementById("ema-fast").value, false),
+    ema_slow: parseCommaSeparatedNumbers(document.getElementById("ema-slow").value, false),
+    atr_min: parseCommaSeparatedNumbers(document.getElementById("atr-min").value, true),
+    daily_loss_cap: parseCommaSeparatedNumbers(document.getElementById("daily-loss-cap").value, true),
+  };
+}
+
+function setDefaultConfig() {
+  document.getElementById("symbols").value = "NIFTY28OCT2525200CE,NIFTY28OCT2525200PE";
+  document.getElementById("start-date").value = "2025-09-01";
+  document.getElementById("end-date").value = "2025-10-06";
+  document.getElementById("starting-capital").value = "100000";
+  document.getElementById("qty-per-point").value = "150";
+  document.getElementById("max-workers").value = "2";
+  document.getElementById("target-min").value = "2";
+  document.getElementById("target-max").value = "10";
+  document.getElementById("stoploss-min").value = "2";
+  document.getElementById("stoploss-max").value = "10";
+  document.getElementById("ema-fast").value = "3,5";
+  document.getElementById("ema-slow").value = "10,20";
+  document.getElementById("atr-min").value = "1,2,3";
+  document.getElementById("daily-loss-cap").value = "-1000,-1500,-2000,-2500,-3000";
+}
+
+function calculateTotalJobs(config) {
+  const numSymbols = config.symbols.length;
+  const numTargets = Math.floor((config.target_max - config.target_min) / 0.5) + 1;
+  const numStoploss = Math.floor((config.stoploss_max - config.stoploss_min) / 0.5) + 1;
+  const numEmaFast = config.ema_fast.length;
+  const numEmaSlow = config.ema_slow.length;
+  const numAtrMin = config.atr_min.length;
+  const numDailyLossCap = config.daily_loss_cap.length;
+
+  return numSymbols * numTargets * numStoploss * numEmaFast * numEmaSlow * numAtrMin * numDailyLossCap;
+}
+
 function setupControls() {
   if (startBtn) {
     startBtn.addEventListener("click", async () => {
@@ -409,11 +608,146 @@ function setupControls() {
       }
     });
   }
+
+  if (toggleConfigBtn) {
+    toggleConfigBtn.addEventListener("click", () => {
+      if (configForm.classList.contains("hidden")) {
+        configForm.classList.remove("hidden");
+        toggleConfigBtn.textContent = "Hide";
+      } else {
+        configForm.classList.add("hidden");
+        toggleConfigBtn.textContent = "Show";
+      }
+    });
+  }
+
+  if (applyConfigBtn) {
+    applyConfigBtn.addEventListener("click", async () => {
+      applyConfigBtn.disabled = true;
+      configInfo.textContent = "";
+      configInfo.className = "config-info";
+
+      try {
+        const formConfig = getConfigFromForm();
+
+        // Validate
+        if (formConfig.symbols.length === 0) {
+          throw new Error("At least one symbol is required");
+        }
+        if (formConfig.target_min > formConfig.target_max) {
+          throw new Error("Target min must be <= target max");
+        }
+        if (formConfig.stoploss_min > formConfig.stoploss_max) {
+          throw new Error("Stoploss min must be <= stoploss max");
+        }
+
+        // Build param_ranges from form values
+        const targetPoints = [];
+        for (let i = formConfig.target_min; i <= formConfig.target_max; i += 0.5) {
+          targetPoints.push(i);
+        }
+
+        const stoplossPoints = [];
+        for (let i = formConfig.stoploss_min; i <= formConfig.stoploss_max; i += 0.5) {
+          stoplossPoints.push(i);
+        }
+
+        const paramRanges = {
+          target_points: targetPoints,
+          stoploss_points: stoplossPoints,
+          ema_fast: formConfig.ema_fast,
+          ema_slow: formConfig.ema_slow,
+          atr_min_points: formConfig.atr_min,
+          daily_loss_cap: formConfig.daily_loss_cap,
+          trade_direction: ["long_only"],
+          confirm_trend_at_entry: [true],
+          enable_eod_square_off: [true],
+        };
+
+        // Build config payload
+        const config = {
+          strategy: currentStrategy ? currentStrategy.name : "scalp_with_trend",
+          symbols: formConfig.symbols,
+          start_date: formConfig.start_date,
+          end_date: formConfig.end_date,
+          starting_capital: formConfig.starting_capital,
+          qty_per_point: formConfig.qty_per_point,
+          max_workers: formConfig.max_workers,
+          param_ranges: paramRanges,
+        };
+
+        const totalJobs = calculateTotalJobs(formConfig);
+        if (totalJobs > 100000) {
+          if (!confirm(`This configuration will generate ${totalJobs.toLocaleString()} jobs. This may take a very long time. Continue?`)) {
+            applyConfigBtn.disabled = false;
+            return;
+          }
+        }
+
+        const response = await fetch("/configure", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(config),
+        });
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.detail || "Configuration failed");
+        }
+
+        const result = await response.json();
+        renderStatus(result.status);
+
+        configInfo.textContent = `Configuration applied! Strategy: ${config.strategy}, Total jobs: ${result.status.total_jobs.toLocaleString()}`;
+        configInfo.className = "config-info success";
+
+        // Auto-hide config panel after 2 seconds
+        setTimeout(() => {
+          if (configForm && toggleConfigBtn) {
+            configForm.classList.add("hidden");
+            toggleConfigBtn.textContent = "Show";
+          }
+        }, 2000);
+      } catch (error) {
+        configInfo.textContent = `Error: ${error.message}`;
+        configInfo.className = "config-info error";
+      } finally {
+        applyConfigBtn.disabled = false;
+      }
+    });
+  }
+
+  if (resetConfigBtn) {
+    resetConfigBtn.addEventListener("click", () => {
+      setDefaultConfig();
+      configInfo.textContent = "Reset to defaults";
+      configInfo.className = "config-info";
+      setTimeout(() => {
+        configInfo.textContent = "";
+      }, 2000);
+    });
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   setupControls();
+  loadStrategies();  // Load strategies first
   refreshStatus();
   loadHistory();
   scheduleStatus();
+
+  // Setup sorting on table headers
+  document.querySelectorAll('.history-table th.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+      const column = th.dataset.sort;
+      if (column) {
+        sortHistory(column);
+      }
+    });
+  });
+
+  // Setup strategy selector
+  if (strategySelect) {
+    strategySelect.addEventListener('change', onStrategyChange);
+  }
 });
