@@ -10,6 +10,7 @@ TimescaleDB ingest + reader for OpenAlgo OHLCV bars
 
 import os
 import sys
+from datetime import timedelta
 from typing import Optional
 
 import pandas as pd
@@ -327,8 +328,7 @@ def fetch_history_to_tsdb(
     requested_start_date = start_ist.date()
     requested_end_date = end_ist.date()
 
-    fetch_start_date = requested_start_date
-    fetch_end_date = requested_end_date
+    fetch_windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
 
     coverage = get_series_coverage(symbol, exchange, interval)
     if coverage and coverage["first_ts"] is not None and coverage["last_ts"] is not None:
@@ -345,26 +345,26 @@ def fetch_history_to_tsdb(
             )
             return 0
 
-        if (
-            requested_end_date > coverage_end_date
-            and requested_start_date >= coverage_start_date
-        ):
-            fetch_start_date = max(requested_start_date, coverage_end_date)
+        if requested_start_date < coverage_start_date:
+            fetch_start = requested_start_date
+            fetch_end = min(requested_end_date, coverage_start_date - timedelta(days=1))
+            if fetch_start <= fetch_end:
+                fetch_windows.append((fetch_start, fetch_end))
 
-    fetch_start_str = fetch_start_date.isoformat()
-    fetch_end_str = fetch_end_date.isoformat()
+        if requested_end_date > coverage_end_date:
+            fetch_start = max(requested_start_date, coverage_end_date + timedelta(days=1))
+            fetch_end = requested_end_date
+            if fetch_start <= fetch_end:
+                fetch_windows.append((fetch_start, fetch_end))
 
-    if fetch_start_date > fetch_end_date:
-        print(
-            f"ℹ️ No new range to fetch for {symbol} {exchange} {interval} after considering existing coverage."
-        )
-        return 0
-
-    if (fetch_start_date, fetch_end_date) != (requested_start_date, requested_end_date):
-        print(
-            f"ℹ️ Adjusted fetch window for {symbol} {exchange} {interval} to "
-            f"{fetch_start_str} → {fetch_end_str} to avoid refetching stored data."
-        )
+        if not fetch_windows:
+            print(
+                f"ℹ️ Requested {symbol} {exchange} {interval} window "
+                f"{requested_start_date} → {requested_end_date} already present in TimescaleDB."
+            )
+            return 0
+    else:
+        fetch_windows.append((requested_start_date, requested_end_date))
 
     try:
         from openalgo import api as openalgo_api  # pylint: disable=import-error
@@ -375,55 +375,83 @@ def fetch_history_to_tsdb(
 
     client = openalgo_api(api_key=API_KEY, host=API_HOST)
 
-    raw = client.history(
-        symbol=symbol,
-        exchange=exchange,
-        interval=interval,
-        start_date=fetch_start_str,
-        end_date=fetch_end_str,
-    )
-    df = _to_dataframe(raw)
-    if {"error", "message"}.issubset(df.columns):
-        raise RuntimeError(f"OpenAlgo error: {df.iloc[0]['message']}")
-    if "error" in df.columns and "message" not in df.columns:
-        raise RuntimeError(f"OpenAlgo error response: {df.iloc[0]['error']}")
-    if "status" in df.columns and df["status"].iloc[0] not in ("ok", "success"):
-        detail = df["status"].iloc[0]
-        if "message" in df.columns:
-            detail = f"{detail}: {df['message'].iloc[0]}"
-        raise RuntimeError(f"OpenAlgo status {detail}")
+    total_rows = 0
+    csv_frames: list[pd.DataFrame] = []
 
-    if df.empty:
-        print(f"⚠️ OpenAlgo returned no rows for {symbol} {exchange} {interval}.")
-        return 0
+    for window_start, window_end in fetch_windows:
+        fetch_start_str = window_start.isoformat()
+        fetch_end_str = window_end.isoformat()
+        print(
+            f"⬇️ Fetching {symbol} {exchange} {interval} | {fetch_start_str} → {fetch_end_str} (IST)"
+        )
 
-    # Normalize DataFrame columns
-    if "timestamp" in df.columns:
-        df = df.set_index(pd.to_datetime(df["timestamp"], utc=False))
-        df = df.drop(columns=["timestamp"])
+        raw = client.history(
+            symbol=symbol,
+            exchange=exchange,
+            interval=interval,
+            start_date=fetch_start_str,
+            end_date=fetch_end_str,
+        )
+        df = _to_dataframe(raw)
+        if {"error", "message"}.issubset(df.columns):
+            raise RuntimeError(f"OpenAlgo error: {df.iloc[0]['message']}")
+        if "error" in df.columns and "message" not in df.columns:
+            raise RuntimeError(f"OpenAlgo error response: {df.iloc[0]['error']}")
+        if "status" in df.columns and df["status"].iloc[0] not in ("ok", "success"):
+            detail = df["status"].iloc[0]
+            if "message" in df.columns:
+                detail = f"{detail}: {df['message'].iloc[0]}"
+            raise RuntimeError(f"OpenAlgo status {detail}")
 
-    expected = {"open", "high", "low", "close", "volume"}
-    if not expected.issubset(set(df.columns)):
-        col_map = {}
-        for c in ["open", "high", "low", "close", "volume", "oi"]:
-            if c in df.columns:
-                col_map[c] = c
-        missing = expected - set(col_map.keys())
-        if missing:
-            raise ValueError(f"Missing columns in history DataFrame: {missing}")
-        df = df.rename(columns=col_map)
+        if df.empty:
+            print(
+                f"⚠️ OpenAlgo returned no rows for {symbol} {exchange} {interval} in "
+                f"{fetch_start_str} → {fetch_end_str}. Skipping."
+            )
+            continue
 
-    idx = pd.to_datetime(df.index)
-    if idx.tz is None:
-        idx = idx.tz_localize("Asia/Kolkata")
-    df.index = idx.tz_convert("UTC")
+        if "timestamp" in df.columns:
+            df = df.set_index(pd.to_datetime(df["timestamp"], utc=False))
+            df = df.drop(columns=["timestamp"])
 
-    if also_save_csv:
-        df.to_csv(also_save_csv)
+        expected = {"open", "high", "low", "close", "volume"}
+        if not expected.issubset(set(df.columns)):
+            col_map = {}
+            for c in ["open", "high", "low", "close", "volume", "oi"]:
+                if c in df.columns:
+                    col_map[c] = c
+            missing = expected - set(col_map.keys())
+            if missing:
+                raise ValueError(f"Missing columns in history DataFrame: {missing}")
+            df = df.rename(columns=col_map)
 
-    n = upsert_ohlcv(df, symbol, exchange, interval)
-    print(f"✅ Upserted {n} rows into TimescaleDB for {symbol} {exchange} {interval}")
-    return n
+        idx = pd.to_datetime(df.index)
+        if idx.tz is None:
+            idx = idx.tz_localize("Asia/Kolkata")
+        df.index = idx.tz_convert("UTC")
+
+        rows = upsert_ohlcv(df, symbol, exchange, interval)
+        total_rows += rows
+        print(f"✅ Upserted {rows} rows for {symbol} {exchange} {interval} ({fetch_start_str} → {fetch_end_str})")
+
+        if also_save_csv:
+            csv_frames.append(df)
+
+    if also_save_csv and csv_frames:
+        combined = pd.concat(csv_frames).sort_index()
+        combined.to_csv(also_save_csv)
+        print(f"💾 Saved combined CSV to {also_save_csv}")
+
+    if total_rows == 0:
+        print(
+            f"ℹ️ No new rows were ingested for {symbol} {exchange} {interval} in the requested range."
+        )
+    else:
+        print(
+            f"✅ Upserted total {total_rows} rows into TimescaleDB for {symbol} {exchange} {interval}"
+        )
+
+    return total_rows
 
 
 def read_ohlcv_from_tsdb(

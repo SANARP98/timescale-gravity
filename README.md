@@ -76,6 +76,8 @@ python backtest_tsdb.py --symbol NIFTY28OCT2525200PE --exchange NFO --interval 5
 
 - The ingestion pipeline batches upserts with conflict handling, so rerunning a fetch window
   is idempotent.
+- When requesting a history slice, the ingestor checks existing coverage and only fetches the
+  missing date spans (extending earlier/later than what’s already stored).
 - The compression policy automatically compresses chunks older than 30 days; adjust the
   interval in `db_setup.sql` if desired.
 - Timestamps are stored in UTC; the app converts to IST (`Asia/Kolkata`) on read so charting
