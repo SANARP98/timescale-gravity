@@ -14,14 +14,19 @@ const dailyChartPlaceholder = document.getElementById("daily-chart-empty");
 const dailyStatsTable = document.getElementById("daily-stats-table");
 const toastContainer = document.getElementById("toast-container");
 const copyTradesBtn = document.getElementById("copy-trades-btn");
+const backtestOutputCard = document.getElementById("backtest-output-card");
 const dataViewerModal = document.getElementById("data-viewer-modal");
 const modalTitle = document.getElementById("modal-title");
 const modalBody = document.getElementById("modal-body");
+const modalTableContainer = document.getElementById("modal-table-container");
+const modalChartContainer = document.getElementById("modal-chart-container");
+const modalCandlestickCanvas = document.getElementById("modal-candlestick-chart");
 const modalCloseBtn = document.getElementById("modal-close-btn");
 
 
 let dailyChart = null;
 let currentInventorySort = "asc";
+let modalChart = null;
 
 function setButtonLoading(button, isLoading, loadingText = "Loading...") {
   if (!button) return;
@@ -388,10 +393,7 @@ function renderInventoryTable(items, sortOrder = "asc") {
       <tr>
         <td>${item.symbol}</td>
         <td>${item.exchange}</td>
-        <td class="view-data-trigger" 
-            data-symbol="${item.symbol}" data-exchange="${item.exchange}" data-interval="${item.interval}"
-            title="Click to view raw data"
-        >${item.interval}</td>
+        <td>${item.interval}</td>
         <td>${Number(item.rows_count).toLocaleString()}</td>
         <td>${formatTimestamp(item.start_ts)}</td>
         <td>${formatTimestamp(item.end_ts)}</td>
@@ -408,6 +410,17 @@ function renderInventoryTable(items, sortOrder = "asc") {
               data-end-ts="${item.end_ts ?? ""}"
             >
               Use in forms
+            </button>
+            <button
+              type="button"
+              class="table-action-icon"
+              title="View Data"
+              data-action="view"
+              data-symbol="${item.symbol}"
+              data-exchange="${item.exchange}"
+              data-interval="${item.interval}"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
             </button>
             <button
               type="button"
@@ -432,9 +445,7 @@ function renderInventoryTable(items, sortOrder = "asc") {
             <span class="header-content">Symbol ${sortIcon}</span>
           </th>
           <th>Exchange</th>
-          <th title="Click interval to view raw data">
-            <span class="header-content">Interval ⓘ</span>
-          </th>
+          <th>Interval</th>
           <th>Bars</th>
           <th>First Bar (IST)</th>
           <th>Last Bar (IST)</th>
@@ -456,6 +467,8 @@ function clearBacktestOutput() {
   clearTradesPanels();
   resetDailyVisuals();
   if (copyTradesBtn) copyTradesBtn.classList.add("hidden");
+  document.body.classList.remove("roi-positive", "roi-negative");
+  document.body.style.removeProperty("--roi-intensity");
 }
 
 function resetDailyVisuals() {
@@ -846,6 +859,21 @@ async function handleBacktestSubmit(event) {
         ${renderMetrics(data.summary)}
         ${renderExitReasons(data.summary.exit_reason_counts)}
       `;
+
+      // Add the background glow based on ROI
+      if (data.summary.roi_percent) {
+        const roi = Number(data.summary.roi_percent);
+        // Calculate intensity, capping at 1. A 50% ROI gives max intensity.
+        const intensity = Math.min(Math.abs(roi) / 50, 1);
+
+        document.body.style.setProperty("--roi-intensity", intensity);
+
+        if (roi > 0) {
+          document.body.classList.add("roi-positive");
+        } else if (roi < 0) {
+          document.body.classList.add("roi-negative");
+        }
+      }
     }
 
     const recentTrades = data.trades_tail || [];
@@ -926,7 +954,11 @@ function setupModal() {
 
   const closeModal = () => {
     dataViewerModal.classList.add("hidden");
-    if (modalBody) modalBody.innerHTML = ""; // Clear content on close
+    if (modalTableContainer) modalTableContainer.innerHTML = ""; // Clear content on close
+    if (modalChart) {
+      modalChart.destroy();
+      modalChart = null;
+    }
   };
 
   modalCloseBtn.addEventListener("click", closeModal);
@@ -966,23 +998,93 @@ function renderModalTable(data) {
   return `<table><thead><tr>${thead}</tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+function renderModalCandlestickChart(data) {
+  if (modalChart) {
+    modalChart.destroy();
+    modalChart = null;
+  }
+  if (!modalCandlestickCanvas || !data || data.length === 0) return;
+
+  const chartData = data.map(d => ({
+    x: new Date(d.ts).valueOf(),
+    o: d.open,
+    h: d.high,
+    l: d.low,
+    c: d.close,
+  }));
+
+  modalChart = new Chart(modalCandlestickCanvas, {
+    type: 'candlestick',
+    data: {
+      datasets: [{
+        label: 'OHLC',
+        data: chartData,
+        color: {
+          up: '#6fffb5',
+          down: '#ff8b8b',
+          unchanged: '#c5cde0',
+        },
+        borderColor: {
+          up: '#6fffb5',
+          down: '#ff8b8b',
+          unchanged: '#c5cde0',
+        }
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          type: 'time',
+          time: {
+            unit: 'minute',
+            tooltipFormat: 'MMM dd, yyyy HH:mm',
+            displayFormats: {
+              minute: 'HH:mm',
+              hour: 'MMM dd HH:mm',
+            }
+          },
+          grid: { color: "rgba(80, 92, 134, 0.1)" },
+          ticks: { color: "rgba(197, 205, 224, 0.85)", font: { size: 11 } },
+        },
+        y: {
+          grid: { color: "rgba(80, 92, 134, 0.2)" },
+          ticks: { color: "rgba(197, 205, 224, 0.85)", font: { size: 11 } },
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: "rgba(18, 21, 34, 0.95)",
+          titleColor: "#f5f7ff",
+          bodyColor: "#c5cde0",
+          borderColor: "rgba(80, 92, 134, 0.5)",
+          borderWidth: 1,
+        }
+      }
+    }
+  });
+}
+
 async function showDataViewer(symbol, exchange, interval) {
-  if (!dataViewerModal || !modalTitle || !modalBody) return;
+  if (!dataViewerModal || !modalTitle || !modalTableContainer) return;
 
   modalTitle.textContent = `Data for: ${symbol} ${exchange} ${interval}`;
-  modalBody.innerHTML = `<p class="muted" style="text-align: center; padding: 2rem;">Loading data...</p>`;
+  modalTableContainer.innerHTML = `<p class="muted" style="text-align: center; padding: 2rem;">Loading data...</p>`;
   dataViewerModal.classList.remove("hidden");
 
   try {
     const response = await fetch(`/data/${encodeURIComponent(symbol)}/${encodeURIComponent(exchange)}/${encodeURIComponent(interval)}`);
     if (!response.ok) {
-      const err = await response.json().catch(() => ({ detail: "Failed to load data." }));
+      const err = await response.json().catch(() => ({ detail: "Failed to load data."}));
       throw new Error(err.detail);
     }
     const data = await response.json();
-    modalBody.innerHTML = renderModalTable(data);
+    modalTableContainer.innerHTML = renderModalTable(data);
+    renderModalCandlestickChart(data);
   } catch (error) {
-    modalBody.innerHTML = `<p class="status-error" style="text-align: center; padding: 2rem;">Error: ${error.message}</p>`;
+    modalTableContainer.innerHTML = `<p class="status-error" style="text-align: center; padding: 2rem;">Error: ${error.message}</p>`;
     showToast(`❌ Could not load data: ${error.message}`, "error");
   }
 }
@@ -996,14 +1098,6 @@ if (inventoryBox) {
       const newSort = currentSort === "asc" ? "desc" : "asc";
       currentInventorySort = newSort;
       loadInventory(newSort);
-      return;
-    }
-
-    // Check if clicked on view data trigger
-    const viewTrigger = event.target.closest(".view-data-trigger");
-    if (viewTrigger) {
-      const { symbol, exchange, interval } = viewTrigger.dataset;
-      showDataViewer(symbol, exchange, interval);
       return;
     }
 
@@ -1026,6 +1120,8 @@ if (inventoryBox) {
         startTs: button.dataset.startTs || "",
         endTs: button.dataset.endTs || "",
       });
+    } else if (action === "view") {
+      showDataViewer(symbol, exchange, interval);
     }
   });
 }

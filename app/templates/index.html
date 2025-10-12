@@ -7,7 +7,9 @@
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
-  <script defer src="/static/app.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial/dist/chartjs-chart-financial.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
 </head>
 <body>
   <header class="site-header">
@@ -131,7 +133,7 @@
     </aside>
 
     <section class="content">
-      <section class="card">
+      <section id="backtest-output-card" class="card">
         <h2>Backtest Output</h2>
         <div id="backtest-message" class="result-box" data-empty="No backtest executed yet."></div>
         <div id="backtest-summary" class="result-box"></div>
@@ -171,8 +173,11 @@
       <h3 id="modal-title">Data Viewer</h3>
       <button id="modal-close-btn" class="modal-close" aria-label="Close">&times;</button>
     </div>
-    <div id="modal-body" class="modal-body scrollable">
-      <!-- Data table will be rendered here -->
+    <div id="modal-body" class="modal-body-split">
+      <div id="modal-table-container" class="modal-panel scrollable"></div>
+      <div id="modal-chart-container" class="modal-panel">
+        <canvas id="modal-candlestick-chart"></canvas>
+      </div>
     </div>
   </div>
 </div>

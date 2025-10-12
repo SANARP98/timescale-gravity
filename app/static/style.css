@@ -45,6 +45,7 @@ a {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+  transition: background 0.8s ease-out;
 }
 
 .site-header p {
@@ -97,12 +98,51 @@ a {
   border-radius: 18px;
   padding: 2rem;
   box-shadow: 0 18px 40px rgba(4, 8, 24, 0.35);
+  position: relative; /* Needed for the pseudo-element glow */
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .card:hover {
   transform: translateY(-2px);
   box-shadow: 0 22px 50px rgba(4, 8, 24, 0.45);
+}
+
+/* ROI Glow Effect */
+body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.8s ease-out;
+  z-index: -1;
+}
+
+body.roi-positive::before {
+  background: radial-gradient(circle at top center, rgba(111, 255, 181, 0.2) 0%, rgba(111, 255, 181, 0) 70%);
+  opacity: var(--roi-intensity, 0);
+}
+
+body.roi-negative::before {
+  background: radial-gradient(circle at top center, rgba(255, 139, 139, 0.18) 0%, rgba(255, 139, 139, 0) 70%);
+  opacity: var(--roi-intensity, 0);
+}
+
+body.roi-positive .site-header h1 {
+  background: linear-gradient(135deg, #cfffe9, #6fffb5);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+body.roi-negative .site-header h1 {
+  background: linear-gradient(135deg, #ffe1e1, #ff8b8b);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .card h2 {
@@ -306,6 +346,24 @@ button.table-action-delete:hover {
   background: rgba(255, 139, 139, 0.2);
   box-shadow: 0 6px 18px rgba(255, 80, 80, 0.25);
   transform: translateY(-1px);
+}
+
+.table-action-icon {
+  background: rgba(80, 92, 134, 0.2);
+  border: 1px solid rgba(80, 92, 134, 0.5);
+  color: #c5cde0;
+  padding: 0.45rem;
+  font-size: 0.8rem;
+  box-shadow: none;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.table-action-icon:hover {
+  background: rgba(88, 181, 255, 0.2);
+  border-color: rgba(88, 181, 255, 0.5);
 }
 .table-actions-group {
   display: flex;
@@ -817,8 +875,8 @@ table tbody tr:hover {
   background: #121522;
   border: 1px solid rgba(80, 92, 134, 0.4);
   border-radius: 18px;
-  width: 90%;
-  max-width: 900px;
+  width: 95%;
+  max-width: 1600px;
   max-height: 85vh;
   display: flex;
   flex-direction: column;
@@ -854,8 +912,23 @@ table tbody tr:hover {
   line-height: 1;
 }
 
-.modal-body {
+.modal-body-split {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
   padding: 0 0.5rem 1rem;
+}
+
+.modal-panel {
+  padding: 0 1rem;
+}
+
+#modal-table-container {
+  flex: 0 0 40%;
+}
+
+#modal-chart-container {
+  flex: 1 1 60%;
 }
 
 /* Sticky header for modal table */
