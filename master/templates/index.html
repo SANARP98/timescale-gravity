@@ -6,6 +6,8 @@
   <title>Timescale Gravity Master</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js" defer></script>
 </head>
 <body>
   <header class="site-header">
@@ -68,26 +70,34 @@
                 </select>
               </label>
               <label>Starting Capital <input type="number" name="starting_capital" value="100000" step="1000"></label>
-              <label>Qty per Point <input type="number" name="qty_per_point" value="150"></label>
-              <label>Last N Trades <input type="number" name="last_n_trades" value="10" min="1" max="200"></label>
-              <label class="checkbox"><input type="checkbox" name="write_csv"> Write Trades CSV</label>
-            </div>
-            <label>Strategy Parameters (JSON) <textarea id="strategy-params" name="strategy_params" rows="4" placeholder='{"target_points": 5}'></textarea></label>
+            <label>Qty per Point <input type="number" name="qty_per_point" value="150"></label>
+            <label>Last N Trades <input type="number" name="last_n_trades" value="10" min="1" max="200"></label>
+            <label class="checkbox"><input type="checkbox" name="write_csv"> Write Trades CSV</label>
+          </div>
+          <div id="single-strategy-params" class="form-section" data-empty="Strategy exposes no tunable parameters."></div>
             <button type="submit">Run Backtest</button>
           </form>
 
           <div class="stack">
             <section>
               <h3>Summary</h3>
-              <div id="backtest-summary" class="table" data-empty="Run a backtest to see results."></div>
+              <div id="backtest-summary" class="metrics-card" data-empty="Run a backtest to see results."></div>
+            </section>
+            <section>
+              <h3>Exit Reasons</h3>
+              <div id="exit-reasons" class="table-scroll" data-empty="Run a backtest to see exit breakdown."></div>
             </section>
             <section>
               <h3>Trades</h3>
-              <pre id="backtest-trades" class="output" data-empty="Run a backtest to list trades."></pre>
+              <div id="backtest-trades" class="table-scroll" data-empty="Run a backtest to list trades."></div>
             </section>
             <section>
               <h3>Daily Stats</h3>
-              <pre id="backtest-daily" class="output" data-empty="Run a backtest to view daily stats."></pre>
+              <div class="chart-container">
+                <p id="daily-chart-empty" class="muted">Run a backtest to visualize daily performance.</p>
+                <canvas id="daily-chart" class="hidden" aria-label="Daily net P&L chart"></canvas>
+              </div>
+              <div id="daily-stats-table" class="table-scroll" data-empty="No daily stats available."></div>
             </section>
           </div>
         </section>
