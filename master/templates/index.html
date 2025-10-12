@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Timescale Gravity Master</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1>Timescale Gravity Master</h1>
+    <p>Unified interface for individual backtests and permutation sweeps.</p>
+  </header>
+
+  <main class="main">
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-target="single-panel" role="tab" aria-selected="true">Single Backtest</button>
+      <button class="tab" data-target="multi-panel" role="tab" aria-selected="false">Permutation Runner</button>
+    </nav>
+
+    <section id="single-panel" class="panel active" role="tabpanel">
+      <div class="grid">
+        <section class="card">
+          <div class="card-header">
+            <h2>Data Inventory</h2>
+            <button id="inventory-refresh">Refresh</button>
+          </div>
+          <p class="card-help">Click a series to prefill the backtest form, inspect rows, or delete the slice.</p>
+          <div id="inventory-list" class="list" data-empty="No data slices found."></div>
+        </section>
+
+        <section class="card">
+          <h2>Fetch &amp; Upsert</h2>
+          <form id="fetch-form" class="form">
+            <label>Symbol <input name="symbol" value="NIFTY28OCT2525200PE" required></label>
+            <label>Exchange <input name="exchange" value="NFO" required></label>
+            <label>Interval <input name="interval" value="5m" required></label>
+            <label>Start Date <input type="date" name="start_date" value="2025-09-01" required></label>
+            <label>End Date <input type="date" name="end_date" value="2025-10-06" required></label>
+            <label>CSV Path <input name="also_save_csv" placeholder="optional.csv"></label>
+            <button type="submit">Fetch</button>
+          </form>
+          <pre id="fetch-result" class="output" data-empty="Awaiting fetch request."></pre>
+        </section>
+
+        <section class="card wide">
+          <h2>Run Backtest</h2>
+          <form id="backtest-form" class="form">
+            <div class="two-col">
+              <label>Symbol <input name="symbol" value="NIFTY28OCT2525200PE" required></label>
+              <label>Exchange <input name="exchange" value="NFO" required></label>
+              <label>Interval <input name="interval" value="5m" required></label>
+              <label>Start Date <input type="date" name="start_date" value="2025-09-01" required></label>
+              <label>End Date <input type="date" name="end_date" value="2025-10-06" required></label>
+              <label>
+                Strategy
+                <select name="strategy_name" id="single-strategy-select" required>
+                  <option value="">Loading…</option>
+                </select>
+              </label>
+              <label>
+                Option Selection
+                <select name="option_selection">
+                  <option value="both" selected>Both</option>
+                  <option value="pe">PE only</option>
+                  <option value="ce">CE only</option>
+                </select>
+              </label>
+              <label>Starting Capital <input type="number" name="starting_capital" value="100000" step="1000"></label>
+              <label>Qty per Point <input type="number" name="qty_per_point" value="150"></label>
+              <label>Last N Trades <input type="number" name="last_n_trades" value="10" min="1" max="200"></label>
+              <label class="checkbox"><input type="checkbox" name="write_csv"> Write Trades CSV</label>
+            </div>
+            <label>Strategy Parameters (JSON) <textarea id="strategy-params" name="strategy_params" rows="4" placeholder='{"target_points": 5}'></textarea></label>
+            <button type="submit">Run Backtest</button>
+          </form>
+
+          <div class="stack">
+            <section>
+              <h3>Summary</h3>
+              <div id="backtest-summary" class="table" data-empty="Run a backtest to see results."></div>
+            </section>
+            <section>
+              <h3>Trades</h3>
+              <pre id="backtest-trades" class="output" data-empty="Run a backtest to list trades."></pre>
+            </section>
+            <section>
+              <h3>Daily Stats</h3>
+              <pre id="backtest-daily" class="output" data-empty="Run a backtest to view daily stats."></pre>
+            </section>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="multi-panel" class="panel" role="tabpanel" aria-hidden="true">
+      <div class="grid">
+        <section class="card">
+          <h2>Configuration</h2>
+          <form id="multi-config-form" class="form">
+            <label>
+              Strategy
+              <select id="multi-strategy-select" name="strategy" required>
+                <option value="">Loading…</option>
+              </select>
+            </label>
+            <label>Symbols (comma separated) <input type="text" name="symbols" value="NIFTY28OCT2525200CE,NIFTY28OCT2525200PE"></label>
+            <label>Start Date <input type="date" name="start_date" value="2025-09-01" required></label>
+            <label>End Date <input type="date" name="end_date" value="2025-10-06" required></label>
+            <label>Starting Capital <input type="number" name="starting_capital" value="100000" step="1000" required></label>
+            <label>Qty per Point <input type="number" name="qty_per_point" value="150" required></label>
+            <label>Max Workers <input type="number" name="max_workers" value="2" min="1" max="16" required></label>
+            <label>Parameter Ranges (JSON) <textarea name="param_ranges" rows="6" placeholder='{"target_points": [4,5,6]}'></textarea></label>
+            <button type="submit">Apply Configuration</button>
+          </form>
+        </section>
+
+        <section class="card">
+          <h2>Controls</h2>
+          <div class="controls">
+            <button id="multi-start">Start / Resume</button>
+            <button id="multi-pause">Pause</button>
+            <button id="multi-reset">Reset Queue</button>
+            <button id="multi-clear">Clear Results</button>
+            <button id="multi-refresh">Refresh Status</button>
+          </div>
+          <pre id="multi-status" class="output" data-empty="Configure or start the runner."></pre>
+        </section>
+
+        <section class="card wide">
+          <div class="controls">
+            <h2>History</h2>
+            <button id="multi-history-refresh">Refresh</button>
+            <a id="multi-history-export" class="link-button" href="/api/multi/history/export" target="_blank" rel="noopener">Export CSV</a>
+          </div>
+          <table id="history-table">
+            <thead>
+              <tr>
+                <th>Created</th>
+                <th>Strategy</th>
+                <th>Symbol</th>
+                <th>Params</th>
+                <th>Summary</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="empty"><td colspan="5">No history yet.</td></tr>
+            </tbody>
+          </table>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>APIs live under <code>/api/single</code> and <code>/api/multi</code>.</p>
+  </footer>
+
+  <script src="/static/app.js" defer></script>
+
+  <div id="inventory-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-content">
+      <header class="modal-header">
+        <h3 id="modal-title">Series Preview</h3>
+        <button id="modal-close" aria-label="Close">&times;</button>
+      </header>
+      <div class="modal-body">
+        <div id="modal-body-content" class="table-scroll" data-empty="Select a slice to preview rows."></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
