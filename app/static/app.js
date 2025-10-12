@@ -13,6 +13,7 @@ const dailyChartCanvas = document.getElementById("daily-chart");
 const dailyChartPlaceholder = document.getElementById("daily-chart-empty");
 const dailyStatsTable = document.getElementById("daily-stats-table");
 const toastContainer = document.getElementById("toast-container");
+const copyTradesBtn = document.getElementById("copy-trades-btn");
 
 let dailyChart = null;
 let currentInventorySort = "asc";
@@ -387,28 +388,30 @@ function renderInventoryTable(items, sortOrder = "asc") {
         <td>${formatTimestamp(item.start_ts)}</td>
         <td>${formatTimestamp(item.end_ts)}</td>
         <td>
-          <button
-            type="button"
-            class="table-action"
-            data-action="use"
-            data-symbol="${item.symbol}"
-            data-exchange="${item.exchange}"
-            data-interval="${item.interval}"
-            data-start-ts="${item.start_ts ?? ""}"
-            data-end-ts="${item.end_ts ?? ""}"
-          >
-            Use in forms
-          </button>
-          <button
-            type="button"
-            class="table-action-delete"
-            data-action="delete"
-            data-symbol="${item.symbol}"
-            data-exchange="${item.exchange}"
-            data-interval="${item.interval}"
-          >
-            Delete
-          </button>
+          <div class="table-actions-group">
+            <button
+              type="button"
+              class="table-action"
+              data-action="use"
+              data-symbol="${item.symbol}"
+              data-exchange="${item.exchange}"
+              data-interval="${item.interval}"
+              data-start-ts="${item.start_ts ?? ""}"
+              data-end-ts="${item.end_ts ?? ""}"
+            >
+              Use in forms
+            </button>
+            <button
+              type="button"
+              class="table-action-delete"
+              data-action="delete"
+              data-symbol="${item.symbol}"
+              data-exchange="${item.exchange}"
+              data-interval="${item.interval}"
+            >
+              Delete
+            </button>
+          </div>
         </td>
       </tr>`
     )
@@ -436,6 +439,13 @@ function renderInventoryTable(items, sortOrder = "asc") {
 function clearTradesPanels() {
   if (tradesRecentPanel) tradesRecentPanel.innerHTML = "";
   if (tradesAllPanel) tradesAllPanel.innerHTML = "";
+}
+
+function clearBacktestOutput() {
+  if (backtestSummaryBox) backtestSummaryBox.innerHTML = "";
+  clearTradesPanels();
+  resetDailyVisuals();
+  if (copyTradesBtn) copyTradesBtn.classList.add("hidden");
 }
 
 function resetDailyVisuals() {
@@ -787,10 +797,8 @@ async function handleBacktestSubmit(event) {
   const payload = toPayload(backtestForm);
   const submitBtn = backtestForm.querySelector('button[type="submit"]');
   setButtonLoading(submitBtn, true, "Running...");
-  setStatus(backtestMessage, "Running backtest from TimescaleDB...", false);
-  backtestSummaryBox.innerHTML = "";
-  clearTradesPanels();
-  resetDailyVisuals();
+  setStatus(backtestMessage, "Running backtest from TimescaleDB...", false);  
+  clearBacktestOutput();
 
   try {
     const response = await fetch("/backtest", {
@@ -847,11 +855,37 @@ async function handleBacktestSubmit(event) {
     renderDailyChart(data.daily_stats || []);
     renderDailyStatsTable(data.daily_stats || []);
     setActiveTab("recent");
+
+    if (copyTradesBtn && allTrades.length > 0) {
+      copyTradesBtn.classList.remove("hidden");
+      copyTradesBtn.onclick = () => copyTradesToClipboard(allTrades);
+    }
   } catch (error) {
     setStatus(backtestMessage, `❌ ${error.message}`, true);
     showToast(`❌ ${error.message}`, "error");
   } finally {
     setButtonLoading(submitBtn, false);
+  }
+}
+
+function copyTradesToClipboard(trades) {
+  if (!trades || trades.length === 0) {
+    showToast("No trades to copy.", "info");
+    return;
+  }
+  try {
+    const headers = Object.keys(trades[0]);
+    const headerRow = headers.join("\t");
+    const rows = trades.map(trade => 
+      headers.map(header => String(trade[header] ?? "")).join("\t")
+    );
+    const tsvContent = [headerRow, ...rows].join("\n");
+
+    navigator.clipboard.writeText(tsvContent);
+    showToast(`✅ Copied ${trades.length} trades to clipboard.`, "success");
+  } catch (error) {
+    console.error("Failed to copy trades:", error);
+    showToast("❌ Failed to copy trades to clipboard.", "error");
   }
 }
 

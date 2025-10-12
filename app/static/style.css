@@ -307,6 +307,13 @@ button.table-action-delete:hover {
   box-shadow: 0 6px 18px rgba(255, 80, 80, 0.25);
   transform: translateY(-1px);
 }
+.table-actions-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: flex-start;
+}
 
 .tab-buttons {
   display: flex;
@@ -357,6 +364,15 @@ button.table-action-delete:hover {
   color: rgba(197, 205, 224, 0.7);
 }
 
+.result-box[data-empty]:empty {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 8px,
+    rgba(80, 92, 134, 0.05) 8px,
+    rgba(80, 92, 134, 0.05) 16px
+  );
+}
 
 .chart-box canvas {
   width: 100%;
