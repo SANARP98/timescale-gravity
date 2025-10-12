@@ -37,6 +37,7 @@ environment. The stack includes:
    - Fetch & upsert OpenAlgo history into TimescaleDB.
    - View current symbol coverage (first/last bar, bar count) from TimescaleDB.
    - Launch backtests and review key metrics, exit-reason breakdown, and the latest trades.
+   - Flip between recent and full trade logs, and inspect the daily P&L chart with win/loss breakdowns.
    - Optionally persist the full trade log to CSV via the interface.
 
 4. **Explore the database via CloudBeaver (optional)**

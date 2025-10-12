@@ -6,6 +6,7 @@
   <title>Timescale Gravity</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
   <script defer src="/static/app.js"></script>
 </head>
 <body>
@@ -157,7 +158,20 @@
 
       <div id="backtest-message" class="result-box" data-empty="No backtest executed yet."></div>
       <div id="backtest-summary" class="result-box"></div>
-      <div id="backtest-trades" class="result-box"></div>
+
+      <div class="tab-buttons">
+        <button type="button" class="tab-button active" data-tab-target="recent">Last N Trades</button>
+        <button type="button" class="tab-button" data-tab-target="all">All Trades</button>
+      </div>
+      <div id="trades-recent" class="result-box tab-panel scrollable" data-empty="Run a backtest to view trades."></div>
+      <div id="trades-all" class="result-box tab-panel scrollable hidden" data-empty="Run a backtest to view trades."></div>
+
+      <div class="result-box chart-box">
+        <h3>Daily Net P&amp;L</h3>
+        <p id="daily-chart-empty" class="muted">Run a backtest to visualize daily performance.</p>
+        <img id="daily-chart-image" class="chart-image hidden" alt="Daily net P&L chart preview">
+        <div id="daily-stats-table" class="daily-stats-table"></div>
+      </div>
     </section>
   </main>
 

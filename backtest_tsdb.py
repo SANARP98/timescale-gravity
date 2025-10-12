@@ -8,7 +8,7 @@ Scalp-with-Trend Backtest (multi-bar hold; intraday square-off)
 
 import argparse
 from datetime import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -427,6 +427,42 @@ def summarize_trades(trades: pd.DataFrame) -> Dict[str, Any]:
     }
 
 
+def daily_breakdown(trades: pd.DataFrame) -> List[Dict[str, Any]]:
+    if trades.empty:
+        return []
+
+    df_local = trades.copy()
+    df_local["exit_time"] = pd.to_datetime(df_local["exit_time"])
+
+    if df_local["exit_time"].dt.tz is None:
+        df_local["exit_time"] = df_local["exit_time"].dt.tz_localize("Asia/Kolkata")
+    else:
+        df_local["exit_time"] = df_local["exit_time"].dt.tz_convert("Asia/Kolkata")
+
+    df_local["exit_date"] = df_local["exit_time"].dt.date
+
+    breakdown: List[Dict[str, Any]] = []
+    for exit_date, group in df_local.groupby("exit_date", sort=True):
+        total_pnl = float(group["pnl_rupees"].sum())
+        profit_sum = float(group.loc[group["pnl_rupees"] > 0, "pnl_rupees"].sum())
+        loss_sum = float(group.loc[group["pnl_rupees"] < 0, "pnl_rupees"].sum())
+        breakdown.append(
+            {
+                "date": exit_date.isoformat(),
+                "date_label": pd.Timestamp(exit_date).strftime("%d %b %Y"),
+                "net_pnl": total_pnl,
+                "profit": profit_sum,
+                "loss": loss_sum,
+                "wins": int((group["pnl_rupees"] > 0).sum()),
+                "losses": int((group["pnl_rupees"] < 0).sum()),
+                "trades": int(len(group)),
+            }
+        )
+
+    breakdown.sort(key=lambda x: x["date"])
+    return breakdown
+
+
 def run_backtest_from_config(cfg: Optional[Dict[str, Any]] = None, write_csv: bool = False) -> Dict[str, Any]:
     apply_config(cfg)
 
@@ -437,6 +473,7 @@ def run_backtest_from_config(cfg: Optional[Dict[str, Any]] = None, write_csv: bo
             "trades": pd.DataFrame(),
             "summary": None,
             "output_csv": None,
+            "daily_stats": [],
             "message": "⚠️ No data returned from TimescaleDB for the requested slice.",
         }
     data_slice = compute_indicators(data_slice)
@@ -450,17 +487,25 @@ def run_backtest_from_config(cfg: Optional[Dict[str, Any]] = None, write_csv: bo
             "trades": trades,
             "summary": None,
             "output_csv": None,
+            "daily_stats": [],
             "message": "⚠️  No trades generated.",
         }
 
     summary = summarize_trades(trades.copy())
+    daily_stats = daily_breakdown(trades.copy())
 
     out_csv = None
     if write_csv:
         out_csv = f"scalp_with_trend_results_{SYMBOL}_{INTERVAL}.csv"
         trades.to_csv(out_csv, index=False)
 
-    return {"data": data_slice, "trades": trades, "summary": summary, "output_csv": out_csv}
+    return {
+        "data": data_slice,
+        "trades": trades,
+        "summary": summary,
+        "output_csv": out_csv,
+        "daily_stats": daily_stats,
+    }
 
 
 # ==================== REPORT ====================

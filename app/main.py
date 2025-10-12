@@ -1,5 +1,6 @@
 from pathlib import Path
-from typing import Any, Dict, Optional
+import numbers
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
@@ -11,38 +12,57 @@ from pydantic import BaseModel, Field
 from backtest_tsdb import run_backtest_from_config
 from tsdb_pipeline import fetch_history_to_tsdb, list_available_series
 
+TRADE_COLUMNS = [
+    "entry_time",
+    "exit_time",
+    "side",
+    "entry",
+    "exit",
+    "gross_rupees",
+    "costs_rupees",
+    "pnl_rupees",
+    "exit_reason",
+]
 
-def _tail_records(trades: pd.DataFrame, limit: int) -> list[Dict[str, Any]]:
+
+def _to_ist_iso(value: Any) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, pd.Timestamp):
+        try:
+            value = pd.to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+    if value.tzinfo is None:
+        value = value.tz_localize("UTC")
+    return value.tz_convert("Asia/Kolkata").isoformat()
+
+
+def _serialize_trades(trades: pd.DataFrame, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     if trades.empty:
         return []
-    cols = [
-        "entry_time",
-        "exit_time",
-        "side",
-        "entry",
-        "exit",
-        "gross_rupees",
-        "costs_rupees",
-        "pnl_rupees",
-        "exit_reason",
-    ]
-    available = [c for c in cols if c in trades.columns]
-    records = trades[available].tail(limit).to_dict(orient="records")
+
+    available_cols = [c for c in TRADE_COLUMNS if c in trades.columns]
+    frame = trades[available_cols].copy()
+    if limit:
+        frame = frame.tail(limit)
+
+    records = frame.to_dict(orient="records")
     for record in records:
-        for field in ("entry_time", "exit_time"):
-            value = record.get(field)
-            if value in (None, ""):
+        for time_field in ("entry_time", "exit_time"):
+            record[time_field] = _to_ist_iso(record.get(time_field))
+        for key, value in list(record.items()):
+            if value is None or value == "":
+                record[key] = None
                 continue
-            if isinstance(value, str):
-                try:
-                    value = pd.to_datetime(value)
-                except (TypeError, ValueError):
-                    continue
-            if isinstance(value, pd.Timestamp):
-                if value.tzinfo is None:
-                    value = value.tz_localize("UTC")
-                value = value.tz_convert("Asia/Kolkata")
-                record[field] = value.isoformat()
+            if isinstance(value, numbers.Integral):
+                record[key] = int(value)
+            elif isinstance(value, numbers.Number):
+                record[key] = float(value)
+            elif pd.isna(value):
+                record[key] = None
+            else:
+                record[key] = value
     return records
 
 
@@ -110,7 +130,9 @@ class BacktestRequest(BaseModel):
 
 class BacktestResponse(BaseModel):
     summary: Dict[str, Any]
-    trades_tail: list[Dict[str, Any]]
+    trades_tail: List[Dict[str, Any]]
+    trades_all: List[Dict[str, Any]]
+    daily_stats: List[Dict[str, Any]]
     output_csv: Optional[str] = None
 
 
@@ -171,9 +193,28 @@ def run_backtest_api(payload: BacktestRequest):
         message = result.get("message", "Backtest could not be completed.")
         raise HTTPException(status_code=404, detail=message)
 
-    trades_tail = _tail_records(result["trades"], last_n)
+    trades_all = _serialize_trades(result["trades"])
+    trades_tail = trades_all[-last_n:] if last_n else trades_all
+
+    daily_stats_raw = result.get("daily_stats", [])
+    daily_stats: List[Dict[str, Any]] = []
+    for item in daily_stats_raw:
+        normalized: Dict[str, Any] = {}
+        for key, value in item.items():
+            if value is None:
+                normalized[key] = None
+            elif isinstance(value, numbers.Integral):
+                normalized[key] = int(value)
+            elif isinstance(value, numbers.Number):
+                normalized[key] = float(value)
+            else:
+                normalized[key] = value
+        daily_stats.append(normalized)
+
     return BacktestResponse(
         summary=summary,
         trades_tail=trades_tail,
+        trades_all=trades_all,
+        daily_stats=daily_stats,
         output_csv=result.get("output_csv"),
     )

@@ -138,6 +138,41 @@ button.table-action:hover {
   box-shadow: 0 6px 18px rgba(51, 102, 255, 0.25);
 }
 
+.tab-buttons {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.tab-button {
+  background: rgba(88, 181, 255, 0.12);
+  border: 1px solid transparent;
+  color: #c5cde0;
+  padding: 0.5rem 1.1rem;
+  border-radius: 999px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tab-button:hover {
+  border-color: rgba(88, 181, 255, 0.45);
+}
+
+.tab-button.active {
+  background: linear-gradient(135deg, #58b5ff, #3366ff);
+  color: #0b0d17;
+}
+
+.tab-panel {
+  margin-top: 1rem;
+}
+
+.tab-panel.hidden {
+  display: none;
+}
+
 .result-box {
   margin-top: 1.5rem;
   padding: 1rem 1.2rem;
@@ -149,9 +184,34 @@ button.table-action:hover {
   font-size: 0.95rem;
 }
 
+.scrollable {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
 .result-box[data-empty]:empty::before {
   content: attr(data-empty);
   color: rgba(197, 205, 224, 0.7);
+}
+
+.chart-box {
+  margin-top: 1.5rem;
+}
+
+.chart-box h3 {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+  font-size: 1.2rem;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.muted {
+  color: rgba(197, 205, 224, 0.7);
+  font-size: 0.9rem;
+  margin: 0.25rem 0 0.75rem;
 }
 
 .metrics-grid {
@@ -204,6 +264,45 @@ td {
 th {
   font-weight: 600;
   color: rgba(197, 205, 224, 0.85);
+}
+
+.positive,
+.positive-row td:nth-child(2) {
+  color: #6fffb5;
+}
+
+.negative,
+.negative-row td:nth-child(2) {
+  color: #ff8b8b;
+}
+
+.daily-stats-table {
+  margin-top: 1rem;
+}
+
+.daily-stats-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.daily-stats-table th,
+.daily-stats-table td {
+  padding: 0.55rem 0.65rem;
+  border-bottom: 1px solid rgba(54, 65, 104, 0.35);
+  text-align: left;
+}
+
+.daily-stats-table tr:last-child td {
+  border-bottom: none;
+}
+
+.daily-stats-table tr.positive td:nth-child(2) {
+  color: #6fffb5;
+}
+
+.daily-stats-table tr.negative td:nth-child(2) {
+  color: #ff8b8b;
 }
 
 .status-success {

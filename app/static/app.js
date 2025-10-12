@@ -5,7 +5,13 @@ const fetchResultBox = document.getElementById("fetch-result");
 const backtestForm = document.getElementById("backtest-form");
 const backtestMessage = document.getElementById("backtest-message");
 const backtestSummaryBox = document.getElementById("backtest-summary");
-const backtestTradesBox = document.getElementById("backtest-trades");
+const tradesTabs = document.querySelectorAll(".tab-button");
+const tradesPanels = document.querySelectorAll(".tab-panel");
+const tradesRecentPanel = document.getElementById("trades-recent");
+const tradesAllPanel = document.getElementById("trades-all");
+const dailyChartImage = document.getElementById("daily-chart-image");
+const dailyChartPlaceholder = document.getElementById("daily-chart-empty");
+const dailyStatsTable = document.getElementById("daily-stats-table");
 
 function toPayload(form) {
   const payload = {};
@@ -103,7 +109,7 @@ function renderExitReasons(exitCounts) {
   `;
 }
 
-function renderTrades(trades) {
+function renderTrades(trades, heading) {
   if (!trades || trades.length === 0) {
     return "";
   }
@@ -114,13 +120,33 @@ function renderTrades(trades) {
   const rows = trades
     .map((trade) => {
       const cells = headers
-        .map((header) => `<td>${formatValue(trade[header])}</td>`)
+        .map((header) => {
+          const value = trade[header];
+          let formatted = value;
+          let cellClass = "";
+
+          if (header.includes("time")) {
+            formatted = formatTimestamp(value);
+          } else if (typeof value === "number") {
+            formatted = formatValue(value);
+            if (header === "pnl_rupees") {
+              const numeric = Number(value);
+              if (!Number.isNaN(numeric)) {
+                cellClass = numeric >= 0 ? "positive" : "negative";
+              }
+            }
+          } else if (value === null || value === undefined) {
+            formatted = "";
+          }
+
+          return `<td${cellClass ? ` class="${cellClass}"` : ""}>${formatted}</td>`;
+        })
         .join("");
       return `<tr>${cells}</tr>`;
     })
     .join("");
   return `
-    <h3>Last ${trades.length} Trades</h3>
+    ${heading ? `<h3>${heading}</h3>` : ""}
     <table>
       <thead><tr>${thead}</tr></thead>
       <tbody>${rows}</tbody>
@@ -128,8 +154,20 @@ function renderTrades(trades) {
   `;
 }
 
+function renderTradesPanel(panel, trades, heading) {
+  if (!panel) return;
+  panel.innerHTML = "";
+  if (!trades || trades.length === 0) {
+    panel.textContent = "No trades available for the selected window.";
+    return;
+  }
+  panel.innerHTML = renderTrades(trades, heading);
+}
+
 function formatMoney(value) {
-  return Number(value).toLocaleString("en-IN", {
+  const numeric = Number(value);
+  if (Number.isNaN(numeric)) return "";
+  return numeric.toLocaleString("en-IN", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
@@ -138,6 +176,12 @@ function formatMoney(value) {
 function formatValue(value) {
   if (value === null || value === undefined) return "";
   if (typeof value === "number") {
+    return Number(value).toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
+  if (typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value))) {
     return Number(value).toLocaleString(undefined, {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
@@ -272,6 +316,149 @@ function renderInventoryTable(items) {
   `;
 }
 
+function clearTradesPanels() {
+  if (tradesRecentPanel) tradesRecentPanel.innerHTML = "";
+  if (tradesAllPanel) tradesAllPanel.innerHTML = "";
+}
+
+function resetDailyVisuals() {
+  if (dailyChartImage) {
+    dailyChartImage.classList.add("hidden");
+    dailyChartImage.src = "";
+  }
+  if (dailyChartPlaceholder) {
+    dailyChartPlaceholder.textContent = "Run a backtest to visualize daily performance.";
+  }
+  if (dailyStatsTable) {
+    dailyStatsTable.innerHTML = "";
+  }
+}
+
+function renderDailyChart(stats) {
+  if (!dailyChartImage) {
+    return;
+  }
+
+  if (!stats || stats.length === 0) {
+    if (dailyChartImage) {
+      dailyChartImage.classList.add("hidden");
+      dailyChartImage.src = "";
+    }
+    if (dailyChartPlaceholder) dailyChartPlaceholder.textContent = "No trades to chart.";
+    return;
+  }
+
+  const labels = stats.map((item) => item.date_label || item.date);
+  const data = stats.map((item) => Number(item.net_pnl) || 0);
+  const backgroundColors = data.map((value) =>
+    value >= 0 ? "rgba(88, 181, 255, 0.65)" : "rgba(255, 118, 132, 0.65)"
+  );
+  const borderColors = data.map((value) =>
+    value >= 0 ? "rgba(88, 181, 255, 0.95)" : "rgba(255, 118, 132, 0.95)"
+  );
+
+  const offscreenCanvas = document.createElement("canvas");
+  offscreenCanvas.width = Math.max(480, labels.length * 60);
+  offscreenCanvas.height = 260;
+  const ctx = offscreenCanvas.getContext("2d");
+  if (!ctx || typeof Chart === "undefined") {
+    return;
+  }
+
+  new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Net P&L (₹)",
+          data,
+          backgroundColor: backgroundColors,
+          borderColor: borderColors,
+          borderWidth: 1,
+        },
+      ],
+    },
+    options: {
+      responsive: false,
+      maintainAspectRatio: false,
+      scales: {
+        y: {
+          ticks: {
+            callback: (value) =>
+              Number(value).toLocaleString("en-IN", {
+                maximumFractionDigits: 0,
+              }),
+          },
+        },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: { enabled: false },
+      },
+    },
+  });
+
+  const pngDataUrl = offscreenCanvas.toDataURL("image/png");
+  dailyChartImage.src = pngDataUrl;
+  dailyChartImage.classList.remove("hidden");
+  if (dailyChartPlaceholder) {
+    dailyChartPlaceholder.textContent = "";
+  }
+}
+
+function renderDailyStatsTable(stats) {
+  if (!dailyStatsTable) return;
+
+  if (!stats || stats.length === 0) {
+    dailyStatsTable.innerHTML = "";
+    return;
+  }
+
+  const rows = stats
+    .map((item) => {
+      const net = Number(item.net_pnl) || 0;
+      const rowClass = net >= 0 ? "positive" : "negative";
+      return `
+        <tr class="${rowClass}">
+          <td>${item.date_label || item.date}</td>
+          <td>${formatMoney(net)}</td>
+          <td>${item.trades}</td>
+          <td>${item.wins}</td>
+          <td>${item.losses}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  dailyStatsTable.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Net ₹</th>
+          <th>Trades</th>
+          <th>Wins</th>
+          <th>Losses</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function setActiveTab(target) {
+  const targetId = `trades-${target}`;
+  tradesTabs.forEach((button) => {
+    const isActive = button.dataset.tabTarget === target;
+    button.classList.toggle("active", isActive);
+  });
+  tradesPanels.forEach((panel) => {
+    const shouldShow = panel.id === targetId;
+    panel.classList.toggle("hidden", !shouldShow);
+  });
+}
+
 async function loadInventory() {
   if (!inventoryBox) return;
   clearStatusClasses(inventoryBox);
@@ -328,7 +515,8 @@ async function handleBacktestSubmit(event) {
   const payload = toPayload(backtestForm);
   setStatus(backtestMessage, "Running backtest...", false);
   backtestSummaryBox.innerHTML = "";
-  backtestTradesBox.innerHTML = "";
+  clearTradesPanels();
+  resetDailyVisuals();
 
   try {
     const response = await fetch("/backtest", {
@@ -356,11 +544,23 @@ async function handleBacktestSubmit(event) {
       `;
     }
 
-    if (data.trades_tail && data.trades_tail.length > 0) {
-      backtestTradesBox.innerHTML = renderTrades(data.trades_tail);
-    } else {
-      backtestTradesBox.textContent = "No trades produced for the selected window.";
-    }
+    const recentTrades = data.trades_tail || [];
+    const allTrades = data.trades_all || [];
+
+    renderTradesPanel(
+      tradesRecentPanel,
+      recentTrades,
+      `Last ${recentTrades.length} Trades`
+    );
+    renderTradesPanel(
+      tradesAllPanel,
+      allTrades,
+      `All Trades (${allTrades.length})`
+    );
+
+    renderDailyChart(data.daily_stats || []);
+    renderDailyStatsTable(data.daily_stats || []);
+    setActiveTab("recent");
   } catch (error) {
     setStatus(backtestMessage, `❌ ${error.message}`, true);
   }
@@ -392,6 +592,15 @@ if (inventoryBox) {
       endTs: button.dataset.endTs || "",
     });
   });
+}
+
+if (tradesTabs.length > 0) {
+  tradesTabs.forEach((button) => {
+    button.addEventListener("click", () => {
+      setActiveTab(button.dataset.tabTarget || "recent");
+    });
+  });
+  setActiveTab("recent");
 }
 
 loadInventory();
