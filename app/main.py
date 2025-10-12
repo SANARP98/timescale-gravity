@@ -27,7 +27,23 @@ def _tail_records(trades: pd.DataFrame, limit: int) -> list[Dict[str, Any]]:
         "exit_reason",
     ]
     available = [c for c in cols if c in trades.columns]
-    return trades[available].tail(limit).to_dict(orient="records")
+    records = trades[available].tail(limit).to_dict(orient="records")
+    for record in records:
+        for field in ("entry_time", "exit_time"):
+            value = record.get(field)
+            if value in (None, ""):
+                continue
+            if isinstance(value, str):
+                try:
+                    value = pd.to_datetime(value)
+                except (TypeError, ValueError):
+                    continue
+            if isinstance(value, pd.Timestamp):
+                if value.tzinfo is None:
+                    value = value.tz_localize("UTC")
+                value = value.tz_convert("Asia/Kolkata")
+                record[field] = value.isoformat()
+    return records
 
 
 class FetchRequest(BaseModel):

@@ -47,6 +47,13 @@ a {
   font-size: 1.5rem;
 }
 
+.card-subtle {
+  margin-top: -0.5rem;
+  margin-bottom: 1rem;
+  color: rgba(197, 205, 224, 0.7);
+  font-size: 0.85rem;
+}
+
 .card-header {
   display: flex;
   justify-content: space-between;
@@ -116,6 +123,19 @@ button {
 button:hover {
   transform: translateY(-1px);
   box-shadow: 0 10px 25px rgba(51, 102, 255, 0.35);
+}
+
+button.table-action {
+  background: rgba(88, 181, 255, 0.12);
+  border: 1px solid rgba(88, 181, 255, 0.45);
+  color: #f5f7ff;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.8rem;
+  box-shadow: none;
+}
+
+button.table-action:hover {
+  box-shadow: 0 6px 18px rgba(51, 102, 255, 0.25);
 }
 
 .result-box {
