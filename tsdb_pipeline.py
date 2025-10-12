@@ -34,7 +34,12 @@ API_HOST = os.getenv("OPENALGO_API_HOST")
 # ---------- DB ----------
 def get_conn():
     return psycopg2.connect(
-        host=PGHOST, port=PGPORT, user=PGUSER, password=PGPASSWORD, dbname=PGDATABASE
+        host=PGHOST,
+        port=PGPORT,
+        user=PGUSER,
+        password=PGPASSWORD,
+        dbname=PGDATABASE,
+        options="-c TimeZone=UTC",
     )
 
 
@@ -130,6 +135,96 @@ def upsert_ohlcv(df: pd.DataFrame, symbol: str, exchange: str, interval: str, ba
     return affected
 
 
+def _to_dataframe(payload) -> pd.DataFrame:
+    if isinstance(payload, pd.DataFrame):
+        df = payload.copy()
+    elif payload is None:
+        return pd.DataFrame()
+    else:
+        current = payload
+        if isinstance(current, dict):
+            if "data" in current and isinstance(current["data"], (list, tuple)):
+                current = current["data"]
+            else:
+                current = [current]
+        try:
+            df = pd.DataFrame.from_records(current)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise RuntimeError(
+                f"Unexpected response type from OpenAlgo history: {type(payload)}"
+            ) from exc
+
+    df = _denormalize_frame(df)
+    df = _lowercase_columns(df)
+    return df
+
+
+def _lowercase_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(col).split(".")[-1].lower() for col in df.columns]
+    return df
+
+
+def _denormalize_frame(df: pd.DataFrame, max_depth: int = 3) -> pd.DataFrame:
+    current = df.copy()
+    depth = 0
+    while depth < max_depth:
+        if current.empty:
+            return current
+        first_value = current.iloc[0, 0]
+        if len(current.columns) == 1 and isinstance(first_value, dict):
+            current = pd.json_normalize(current.iloc[:, 0])
+            depth += 1
+            continue
+        break
+    # Flatten columns with dict entries
+    for col in list(current.columns):
+        if current[col].apply(lambda v: isinstance(v, dict)).any():
+            expanded = pd.json_normalize(current[col].apply(lambda v: v or {}))
+            expanded.columns = [f"{col}.{c}" for c in expanded.columns]
+            current = current.drop(columns=[col]).join(expanded)
+    return current
+
+
+def list_available_series(target_tz: Optional[str] = "Asia/Kolkata") -> list[dict]:
+    with get_conn() as conn:
+        sql = """
+            SELECT
+                symbol,
+                exchange,
+                interval,
+                MIN(ts) AS first_ts,
+                MAX(ts) AS last_ts,
+                COUNT(*)::bigint AS rows_count
+            FROM ohlcv
+            GROUP BY symbol, exchange, interval
+            ORDER BY symbol, exchange, interval;
+        """
+        df = pd.read_sql(sql, conn, parse_dates=["first_ts", "last_ts"])
+
+    if df.empty:
+        return []
+
+    if target_tz:
+        df["first_ts"] = pd.to_datetime(df["first_ts"], utc=True).dt.tz_convert(target_tz)
+        df["last_ts"] = pd.to_datetime(df["last_ts"], utc=True).dt.tz_convert(target_tz)
+    else:
+        df["first_ts"] = pd.to_datetime(df["first_ts"], utc=True)
+        df["last_ts"] = pd.to_datetime(df["last_ts"], utc=True)
+
+    return [
+        {
+            "symbol": row["symbol"],
+            "exchange": row["exchange"],
+            "interval": row["interval"],
+            "start_ts": row["first_ts"].isoformat() if pd.notna(row["first_ts"]) else None,
+            "end_ts": row["last_ts"].isoformat() if pd.notna(row["last_ts"]) else None,
+            "rows_count": int(row["rows_count"]),
+        }
+        for _, row in df.iterrows()
+    ]
+
+
 def fetch_history_to_tsdb(
     symbol: str,
     exchange: str,
@@ -150,17 +245,21 @@ def fetch_history_to_tsdb(
 
     client = openalgo_api(api_key=API_KEY, host=API_HOST)
 
-    df = client.history(
+    raw = client.history(
         symbol=symbol,
         exchange=exchange,
         interval=interval,
         start_date=start_date,
         end_date=end_date,
     )
+    df = _to_dataframe(raw)
+    if df.empty:
+        print(f"⚠️ OpenAlgo returned no rows for {symbol} {exchange} {interval}.")
+        return 0
 
     # Normalize DataFrame columns
     if "timestamp" in df.columns:
-        df = df.set_index(pd.to_datetime(df["timestamp"]))
+        df = df.set_index(pd.to_datetime(df["timestamp"], utc=False))
         df = df.drop(columns=["timestamp"])
 
     expected = {"open", "high", "low", "close", "volume"}
@@ -173,6 +272,11 @@ def fetch_history_to_tsdb(
         if missing:
             raise ValueError(f"Missing columns in history DataFrame: {missing}")
         df = df.rename(columns=col_map)
+
+    idx = pd.to_datetime(df.index)
+    if idx.tz is None:
+        idx = idx.tz_localize("Asia/Kolkata")
+    df.index = idx.tz_convert("UTC")
 
     if also_save_csv:
         df.to_csv(also_save_csv)
@@ -188,9 +292,14 @@ def read_ohlcv_from_tsdb(
     interval: str,
     start_ts: Optional[str] = None,
     end_ts: Optional[str] = None,
+    target_tz: Optional[str] = "Asia/Kolkata",
 ) -> pd.DataFrame:
     """Read a sliced window into a pandas DataFrame (sorted ascending)"""
     with get_conn() as conn:
+        if target_tz:
+            with conn.cursor() as cur:
+                cur.execute("SET TIME ZONE %s", (target_tz,))
+
         where = ["symbol = %(symbol)s", "exchange = %(exchange)s", "interval = %(interval)s"]
         params = {"symbol": symbol, "exchange": exchange, "interval": interval}
         if start_ts:
@@ -207,8 +316,15 @@ def read_ohlcv_from_tsdb(
             ORDER BY ts ASC
         """
         df = pd.read_sql(sql, conn, params=params, parse_dates=["ts"])
-        df = df.set_index("ts")
-        return df
+
+    df = df.set_index("ts")
+    idx = pd.to_datetime(df.index)
+    if idx.tz is None:
+        idx = idx.tz_localize("UTC")
+    if target_tz:
+        idx = idx.tz_convert(target_tz)
+    df.index = idx
+    return df
 
 
 if __name__ == "__main__":  # pragma: no cover

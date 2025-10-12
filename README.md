@@ -25,10 +25,28 @@ environment. The stack includes:
    ```
 
    - TimescaleDB listens on `localhost:5432`.
-   - The Python API is available on `http://localhost:8000`.
+- The Python API & web UI are available on `http://localhost:8000`.
 
    The first run applies `db_setup.sql`, creating the hypertable, indexes, and compression
    policy.
+
+3. **Use the built-in web UI**
+
+   Visit `http://localhost:8000/` for a lightweight dashboard:
+
+   - Fetch & upsert OpenAlgo history into TimescaleDB.
+   - View current symbol coverage (first/last bar, bar count) from TimescaleDB.
+   - Launch backtests and review key metrics, exit-reason breakdown, and the latest trades.
+   - Optionally persist the full trade log to CSV via the interface.
+
+4. **Explore the database via CloudBeaver (optional)**
+
+   CloudBeaver is bundled for ad-hoc SQL browsing:
+
+   - Open `http://localhost:8080/` (default credentials `admin` / `admin`, change on first login).
+   - Create a new PostgreSQL connection pointing to host `db`, port `5432`, database `trading`,
+     user `postgres`, password `postgres`.
+   - The `ohlcv` hypertable lives under the `public` schema—browse data or run SQL right from the UI.
 
 ## API Overview
 
@@ -60,5 +78,7 @@ python backtest_tsdb.py --symbol NIFTY28OCT2525200PE --exchange NFO --interval 5
   is idempotent.
 - The compression policy automatically compresses chunks older than 30 days; adjust the
   interval in `db_setup.sql` if desired.
+- Timestamps are stored in UTC; the app converts to IST (`Asia/Kolkata`) on read so charting
+  and reports align with local trading hours.
 - For heavy workloads you can move EMA/ATR calculations into TimescaleDB continuous aggregates;
   the current pandas implementation is optimal for a few months of intraday bars.

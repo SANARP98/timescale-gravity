@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Timescale Gravity</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <h1>Timescale Gravity</h1>
+    <p>Fetch OpenAlgo history, ingest into TimescaleDB, and run the Scalp-with-Trend backtest directly from the browser.</p>
+  </header>
+
+  <main class="layout">
+    <section class="card">
+      <div class="card-header">
+        <h2>Available Data</h2>
+        <button type="button" id="inventory-refresh">Refresh</button>
+      </div>
+      <div id="inventory-box" class="result-box" data-empty="No TimescaleDB data yet. Ingest a slice to see coverage."></div>
+    </section>
+
+    <section class="card">
+      <h2>1. Fetch &amp; Upsert History</h2>
+      <form id="fetch-form" class="form-grid">
+        <label>
+          Symbol
+          <input name="symbol" value="NIFTY28OCT2525200PE" required>
+        </label>
+        <label>
+          Exchange
+          <input name="exchange" value="NFO" required>
+        </label>
+        <label>
+          Interval
+          <input name="interval" value="5m" required>
+        </label>
+        <label>
+          Start Date
+          <input name="start_date" type="date" value="2025-09-01" required>
+        </label>
+        <label>
+          End Date
+          <input name="end_date" type="date" value="2025-10-06" required>
+        </label>
+        <label>
+          CSV Path (optional)
+          <input name="also_save_csv" placeholder="history.csv">
+        </label>
+        <div class="form-actions">
+          <button type="submit">Fetch &amp; Upsert</button>
+        </div>
+      </form>
+      <div id="fetch-result" class="result-box" data-empty="Awaiting fetch request."></div>
+    </section>
+
+    <section class="card">
+      <h2>2. Run Backtest</h2>
+      <form id="backtest-form" class="form-grid">
+        <label>
+          Symbol
+          <input name="symbol" value="NIFTY28OCT2525200PE" required>
+        </label>
+        <label>
+          Exchange
+          <input name="exchange" value="NFO" required>
+        </label>
+        <label>
+          Interval
+          <input name="interval" value="5m" required>
+        </label>
+        <label>
+          Start Date
+          <input name="start_date" type="date" value="2025-09-01" required>
+        </label>
+        <label>
+          End Date
+          <input name="end_date" type="date" value="2025-10-06" required>
+        </label>
+        <label>
+          Starting Capital
+          <input name="starting_capital" type="number" value="100000" step="1000">
+        </label>
+        <label>
+          Qty per Point
+          <input name="qty_per_point" type="number" value="150">
+        </label>
+        <label>
+          Target (pts)
+          <input name="target_points" type="number" value="10" step="0.1">
+        </label>
+        <label>
+          Stoploss (pts)
+          <input name="stoploss_points" type="number" value="2" step="0.1">
+        </label>
+        <label>
+          EMA Fast
+          <input name="ema_fast" type="number" value="5">
+        </label>
+        <label>
+          EMA Slow
+          <input name="ema_slow" type="number" value="20">
+        </label>
+        <label>
+          ATR Window
+          <input name="atr_window" type="number" value="14">
+        </label>
+        <label>
+          ATR Min (pts)
+          <input name="atr_min_points" type="number" value="2" step="0.1">
+        </label>
+        <label>
+          Daily Loss Cap (₹)
+          <input name="daily_loss_cap" type="number" value="-1000" step="100">
+        </label>
+        <label>
+          Exit Bar Path
+          <select name="exit_bar_path">
+            <option value="color" selected>color</option>
+            <option value="bull">bull</option>
+            <option value="bear">bear</option>
+            <option value="worst">worst</option>
+          </select>
+        </label>
+        <label>
+          Trade Direction
+          <select name="trade_direction">
+            <option value="both" selected>both</option>
+            <option value="long_only">long_only</option>
+            <option value="short_only">short_only</option>
+          </select>
+        </label>
+        <label class="inline">
+          <input type="checkbox" name="confirm_trend_at_entry" checked>
+          Confirm Trend at Entry
+        </label>
+        <label class="inline">
+          <input type="checkbox" name="enable_eod_square_off" checked>
+          Enable EOD Square-off
+        </label>
+        <label class="inline">
+          <input type="checkbox" name="write_csv">
+          Save Trades CSV
+        </label>
+        <label>
+          Last N Trades
+          <input name="last_n_trades" type="number" value="10" min="1" max="200">
+        </label>
+        <div class="form-actions">
+          <button type="submit">Run Backtest</button>
+        </div>
+      </form>
+
+      <div id="backtest-message" class="result-box" data-empty="No backtest executed yet."></div>
+      <div id="backtest-summary" class="result-box"></div>
+      <div id="backtest-trades" class="result-box"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>API endpoints remain available at <code>/fetch</code> and <code>/backtest</code>. Use this UI for quick interactive runs.</p>
+  </footer>
+</body>
+</html>

@@ -26,6 +26,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      cloudbeaver:
+        condition: service_started
     env_file:
       - .env
     environment:
@@ -41,5 +43,21 @@ services:
     restart: unless-stopped
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
+  cloudbeaver:
+    image: dbeaver/cloudbeaver:latest
+    container_name: timescale-gravity-cloudbeaver
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      CB_ADMIN_NAME: admin
+      CB_ADMIN_PASSWORD: admin
+    ports:
+      - "8978:8978"
+    volumes:
+      - cloudbeaver_workspace:/opt/cloudbeaver/workspace
+    restart: unless-stopped
+
 volumes:
   db_data:
+  cloudbeaver_workspace:

@@ -1,11 +1,15 @@
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from backtest_tsdb import run_backtest_from_config
-from tsdb_pipeline import fetch_history_to_tsdb
+from tsdb_pipeline import fetch_history_to_tsdb, list_available_series
 
 
 def _tail_records(trades: pd.DataFrame, limit: int) -> list[Dict[str, Any]]:
@@ -41,6 +45,15 @@ class FetchResponse(BaseModel):
     rows_upserted: int
 
 
+class InventoryItem(BaseModel):
+    symbol: str
+    exchange: str
+    interval: str
+    start_ts: Optional[str] = None
+    end_ts: Optional[str] = None
+    rows_count: int
+
+
 class BacktestRequest(BaseModel):
     symbol: Optional[str] = None
     exchange: Optional[str] = None
@@ -56,14 +69,14 @@ class BacktestRequest(BaseModel):
     atr_window: Optional[int] = None
     atr_min_points: Optional[float] = None
     daily_loss_cap: Optional[float] = None
-    exit_bar_path: Optional[str] = Field(default=None, regex="^(color|bull|bear|worst)$")
+    exit_bar_path: Optional[str] = Field(default=None, pattern="^(color|bull|bear|worst)$")
     brokerage_per_trade: Optional[float] = None
     slippage_points: Optional[float] = None
     confirm_trend_at_entry: Optional[bool] = None
     enable_eod_square_off: Optional[bool] = None
     square_off_time: Optional[str] = Field(default=None, description="HH:MM (IST)")
     trade_direction: Optional[str] = Field(
-        default=None, regex="^(both|long_only|short_only)$"
+        default=None, pattern="^(both|long_only|short_only)$"
     )
     session_windows: Optional[list[Dict[str, str]]] = Field(
         default=None,
@@ -87,10 +100,29 @@ class BacktestResponse(BaseModel):
 
 app = FastAPI(title="Timescale Gravity API", version="1.0.0")
 
+BASE_DIR = Path(__file__).resolve().parent
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request):
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+        },
+    )
+
 
 @app.get("/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/inventory", response_model=list[InventoryItem])
+def inventory():
+    return list_available_series()
 
 
 @app.post("/fetch", response_model=FetchResponse)
@@ -104,6 +136,8 @@ def fetch_history(payload: FetchRequest):
             payload.end_date,
             payload.also_save_csv,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return FetchResponse(rows_upserted=rows)
