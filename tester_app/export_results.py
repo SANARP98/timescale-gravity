@@ -35,7 +35,7 @@ SUMMARY_KEYS = [
 
 def fetch_results(ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     sql = """
-        SELECT id, created_at, strategy, symbol, exchange, interval, params, summary
+        SELECT id, created_at, strategy, symbol, exchange, interval, test_name, params, summary
         FROM tester_results
         {where_clause}
         ORDER BY created_at ASC;
@@ -71,6 +71,9 @@ def flatten_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "exchange": row.get("exchange"),
         "interval": row.get("interval"),
     }
+
+    if "test_name" in row:
+        flat["test_name"] = row.get("test_name")
 
     for key, value in sorted(params.items()):
         flat[f"param_{key}"] = value

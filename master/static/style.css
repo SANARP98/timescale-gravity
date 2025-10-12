@@ -167,6 +167,48 @@ button:disabled {
   color: #64748b;
 }
 
+.mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  padding: 0.2rem;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.mode-toggle-btn {
+  border: none;
+  background: transparent;
+  padding: 0.5rem 1.2rem;
+  border-radius: 999px;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.mode-toggle-btn.active {
+  background: #2563eb;
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
+}
+
+.mode-toggle-btn:hover:not(.active) {
+  background: rgba(37, 99, 235, 0.15);
+  color: #1e3a8a;
+}
+
+.run-mode-section.hidden {
+  display: none;
+}
+
+.form-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  color: #475569;
+}
+
 .form {
   display: flex;
   flex-direction: column;
@@ -411,6 +453,10 @@ button:disabled {
   .two-col {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+.two-col .span-two {
+  grid-column: span 2;
 }
 
 .stack {

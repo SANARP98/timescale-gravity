@@ -54,6 +54,7 @@ current_base_config: Dict[str, Any] = {
     "brokerage_per_trade": 0.0,
     "slippage_points": 0.0,
 }
+current_test_name: Optional[str] = None
 
 
 # ------------ Helper Functions ------------
@@ -68,6 +69,7 @@ def result_callback(result: Dict[str, Any]) -> None:
             interval=current_base_config["interval"],
             params=result["params"],
             summary=result["summary"],
+            test_name=result.get("test_name") or current_test_name,
         )
     except Exception as exc:
         logger.exception(f"Failed to store result: {exc}")
@@ -98,6 +100,7 @@ def get_or_create_runner() -> PermutationRunner:
             param_ranges=default_ranges,
             max_workers=max_workers,
             on_result_callback=result_callback,
+            test_name=current_test_name,
         )
     return current_runner
 
@@ -117,6 +120,9 @@ class ConfigRequest(BaseModel):
     qty_per_point: float
     max_workers: int
     param_ranges: Dict[str, Any]  # Dynamic parameter ranges
+    test_name: Optional[str] = None
+    exchange: Optional[str] = "NFO"
+    interval: Optional[str] = "5m"
 
 
 class ExportRequest(BaseModel):
@@ -138,6 +144,7 @@ class HistoryItem(BaseModel):
     symbol: str
     exchange: str
     interval: str
+    test_name: Optional[str] = None
     params: Dict[str, Any]
     summary: Dict[str, Any]
 
@@ -163,6 +170,7 @@ def get_status():
     runner = get_or_create_runner()
     status = runner.status()
     status["database"] = db_stats()
+    status["test_name"] = current_test_name
     return status
 
 
@@ -199,7 +207,7 @@ def reset_runner():
 @app.post("/configure", response_model=ControlResponse)
 def configure_runner(config: ConfigRequest):
     """Apply new configuration to the runner."""
-    global current_runner, current_strategy, current_base_config
+    global current_runner, current_strategy, current_base_config, current_test_name
 
     try:
         # Validate strategy exists
@@ -212,8 +220,8 @@ def configure_runner(config: ConfigRequest):
 
         # Update base config
         new_base_config = {
-            "exchange": "NFO",
-            "interval": "5m",
+            "exchange": (config.exchange or "NFO").upper(),
+            "interval": config.interval or "5m",
             "start_date": config.start_date,
             "end_date": config.end_date,
             "starting_capital": config.starting_capital,
@@ -225,6 +233,7 @@ def configure_runner(config: ConfigRequest):
         # Prepare param ranges - ensure symbols are included
         param_ranges = config.param_ranges.copy()
         param_ranges["symbols"] = config.symbols
+        current_test_name = config.test_name
 
         # Check if we need to create a new runner (strategy changed)
         if current_runner is None or current_strategy != config.strategy:
@@ -243,6 +252,7 @@ def configure_runner(config: ConfigRequest):
                 param_ranges=param_ranges,
                 max_workers=config.max_workers,
                 on_result_callback=result_callback,
+                test_name=current_test_name,
             )
         else:
             # Reconfigure existing runner
@@ -251,6 +261,7 @@ def configure_runner(config: ConfigRequest):
                 base_config=new_base_config,
                 param_ranges=param_ranges,
                 max_workers=config.max_workers,
+                test_name=config.test_name,
             )
 
         status = current_runner.status()
@@ -295,6 +306,7 @@ def list_history():
                 symbol=row.get("symbol"),
                 exchange=row.get("exchange"),
                 interval=row.get("interval"),
+                test_name=row.get("test_name"),
                 params=params,
                 summary=summary,
             )

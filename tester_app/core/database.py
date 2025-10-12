@@ -5,7 +5,7 @@ Database operations for storing and retrieving backtest results.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from psycopg2.extras import Json
 from tsdb_pipeline import get_conn
@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS tester_results (
     symbol TEXT NOT NULL,
     exchange TEXT NOT NULL,
     interval TEXT NOT NULL,
+    test_name TEXT,
     params JSONB NOT NULL,
     summary JSONB NOT NULL
 );
@@ -31,6 +32,7 @@ def ensure_results_table() -> None:
     """Ensure the results table exists."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(CREATE_RESULTS_TABLE_SQL)
+        cur.execute("ALTER TABLE tester_results ADD COLUMN IF NOT EXISTS test_name TEXT;")
         conn.commit()
 
 
@@ -41,20 +43,22 @@ def insert_result(
     interval: str,
     params: Dict[str, Any],
     summary: Dict[str, Any],
+    test_name: Optional[str] = None,
 ) -> None:
     """Insert a backtest result into the database."""
     ensure_results_table()
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO tester_results (strategy, symbol, exchange, interval, params, summary)
-            VALUES (%(strategy)s, %(symbol)s, %(exchange)s, %(interval)s, %(params)s, %(summary)s);
+            INSERT INTO tester_results (strategy, symbol, exchange, interval, test_name, params, summary)
+            VALUES (%(strategy)s, %(symbol)s, %(exchange)s, %(interval)s, %(test_name)s, %(params)s, %(summary)s);
             """,
             {
                 "strategy": strategy,
                 "symbol": symbol,
                 "exchange": exchange,
                 "interval": interval,
+                "test_name": test_name,
                 "params": Json(params),
                 "summary": Json(summary),
             },

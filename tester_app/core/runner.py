@@ -96,12 +96,14 @@ class PermutationRunner:
         param_ranges: Dict[str, Any],
         max_workers: int = 2,
         on_result_callback: Optional[callable] = None,
+        test_name: Optional[str] = None,
     ):
         self.strategy_name = strategy_name
         self.base_config = base_config
         self.param_ranges = param_ranges
         self.max_workers = max(1, max_workers)
         self.on_result_callback = on_result_callback
+        self.test_name = test_name
 
         # Generate jobs
         self._all_jobs: List[Job] = JobGenerator.generate_jobs(strategy_name, param_ranges)
@@ -125,6 +127,7 @@ class PermutationRunner:
         base_config: Optional[Dict[str, Any]] = None,
         param_ranges: Optional[Dict[str, Any]] = None,
         max_workers: Optional[int] = None,
+        test_name: Optional[str] = None,
     ) -> None:
         """Reconfigure the runner. Must be called when runner is stopped."""
         with self._lock:
@@ -141,6 +144,8 @@ class PermutationRunner:
                 self.total_jobs = len(self._all_jobs)
                 self._index = 0
                 self._completed_count = 0
+            if test_name is not None:
+                self.test_name = test_name
 
     def reset(self) -> None:
         """Reset the runner to initial state."""
@@ -299,6 +304,7 @@ class PermutationRunner:
             "symbol": job.symbol,
             "params": job.params,
             "summary": summary,
+            "test_name": self.test_name,
         }
 
     @property
@@ -330,4 +336,5 @@ class PermutationRunner:
             "last_error": self.last_error,
             "max_workers": self.max_workers,
             "strategy": self.strategy_name,
+            "test_name": self.test_name,
         }

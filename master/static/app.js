@@ -68,6 +68,42 @@ function humanize(label) {
   return label.replace(/[_-]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+const inventoryList = document.getElementById("inventory-list");
+const inventoryRefreshBtn = document.getElementById("inventory-refresh");
+const fetchForm = document.getElementById("fetch-form");
+const fetchResult = document.getElementById("fetch-result");
+const backtestForm = document.getElementById("backtest-form");
+const backtestSummary = document.getElementById("backtest-summary");
+const backtestTrades = document.getElementById("backtest-trades");
+const exitReasonsContainer = document.getElementById("exit-reasons");
+const dailyChartCanvas = document.getElementById("daily-chart");
+const dailyChartPlaceholder = document.getElementById("daily-chart-empty");
+const dailyStatsTable = document.getElementById("daily-stats-table");
+const strategySelect = document.getElementById("single-strategy-select");
+const permutationForm = document.getElementById("permutation-form");
+const permutationStrategySelect = document.getElementById("permutation-strategy-select");
+const permutationParamsContainer = document.getElementById("permutation-params");
+const runModeButtons = document.querySelectorAll(".mode-toggle-btn");
+const inventoryModal = document.getElementById("inventory-modal");
+const inventoryModalTitle = document.getElementById("modal-title");
+const inventoryModalBody = document.getElementById("modal-body-content");
+const inventoryModalClose = document.getElementById("modal-close");
+const strategyParamsContainer = document.getElementById("single-strategy-params");
+const multiStrategySelect = document.getElementById("multi-strategy-select");
+const multiConfigForm = document.getElementById("multi-config-form");
+const multiStartBtn = document.getElementById("multi-start");
+const multiPauseBtn = document.getElementById("multi-pause");
+const multiResetBtn = document.getElementById("multi-reset");
+const multiClearBtn = document.getElementById("multi-clear");
+const multiRefreshBtn = document.getElementById("multi-refresh");
+const multiStatus = document.getElementById("multi-status");
+const multiHistoryBtn = document.getElementById("multi-history-refresh");
+const historyTable = document.getElementById("history-table");
+
+let singleStrategies = [];
+let dailyChart = null;
+let currentRunMode = "single";
+
 function generateStrategyField(name, schema, required) {
   const title = schema.title || humanize(name);
   const description = schema.description ? `<p class="field-help">${schema.description}</p>` : "";
@@ -647,67 +683,321 @@ function displayBacktestError(message) {
   resetDailyVisuals("No chart available.");
 }
 
+function switchRunMode(mode) {
+  currentRunMode = mode;
+  runModeButtons.forEach((button) => {
+    const isActive = button.dataset.mode === mode;
+    button.classList.toggle("active", isActive);
+  });
+  if (backtestForm) {
+    backtestForm.classList.toggle("hidden", mode !== "single");
+  }
+  if (permutationForm) {
+    permutationForm.classList.toggle("hidden", mode !== "permutation");
+  }
+  if (mode === "permutation" && permutationStrategySelect) {
+    if (!permutationStrategySelect.value && strategySelect && strategySelect.value) {
+      permutationStrategySelect.value = strategySelect.value;
+    }
+    renderPermutationParams(permutationStrategySelect.value || strategySelect?.value || "");
+  }
+  if (mode === "single" && strategySelect && !strategySelect.value && permutationStrategySelect?.value) {
+    strategySelect.value = permutationStrategySelect.value;
+    renderSingleStrategyParams(strategySelect.value);
+  }
+}
+
+function parseSymbolsInput(raw) {
+  if (!raw) return [];
+  return raw
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function coerceValue(value, type) {
+  if (type === "integer") {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isNaN(parsed)) {
+      throw new Error(`Invalid integer value: ${value}`);
+    }
+    return parsed;
+  }
+  if (type === "number") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isNaN(parsed)) {
+      throw new Error(`Invalid number value: ${value}`);
+    }
+    return parsed;
+  }
+  if (type === "boolean") {
+    if (typeof value === "boolean") return value;
+    const normalized = String(value).toLowerCase();
+    if (["true", "1", "yes"].includes(normalized)) return true;
+    if (["false", "0", "no"].includes(normalized)) return false;
+    throw new Error(`Invalid boolean value: ${value}`);
+  }
+  return String(value);
+}
+
+function expandRangeToken(token, type) {
+  const cleaned = token.trim();
+  if (!cleaned) return [];
+
+  const rangeMatch = cleaned.match(/^(-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)(?::(-?\d+(?:\.\d+)?))?$/);
+  if (!rangeMatch || (type !== "integer" && type !== "number")) {
+    return [coerceValue(cleaned, type)];
+  }
+
+  const start = Number.parseFloat(rangeMatch[1]);
+  const end = Number.parseFloat(rangeMatch[2]);
+  let step = rangeMatch[3] !== undefined ? Number.parseFloat(rangeMatch[3]) : undefined;
+
+  if (step === undefined || Number.isNaN(step) || step === 0) {
+    const defaultStep = start <= end ? 1 : -1;
+    step = type === "integer" ? defaultStep : defaultStep;
+  }
+
+  const values = [];
+  if (step === 0) {
+    return values;
+  }
+
+  const useInt = type === "integer";
+  const epsilon = 1e-9;
+  if (step > 0) {
+    for (let current = start; current <= end + epsilon; current += step) {
+      values.push(useInt ? Math.round(current) : Number.parseFloat(current.toFixed(6)));
+    }
+  } else {
+    for (let current = start; current >= end - epsilon; current += step) {
+      values.push(useInt ? Math.round(current) : Number.parseFloat(current.toFixed(6)));
+    }
+  }
+
+  return values;
+}
+
+function parseRangeValues(raw, type) {
+  if (!raw) return [];
+  const segments = raw.split(",").map((segment) => segment.trim()).filter(Boolean);
+  let values = [];
+  segments.forEach((segment) => {
+    values = values.concat(expandRangeToken(segment, type));
+  });
+  return uniqueValues(values);
+}
+
+function uniqueValues(values) {
+  const seen = new Set();
+  return values.filter((value) => {
+    const key = typeof value === "number" ? value.toFixed(6) : String(value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function generatePermutationField(name, schema) {
+  const title = schema.title || humanize(name);
+  const description = schema.description ? `<p class="field-help">${schema.description}</p>` : "";
+  const defaultValue = schema.default;
+  const defaultString =
+    defaultValue === undefined || defaultValue === null
+      ? ""
+      : typeof defaultValue === "object"
+      ? JSON.stringify(defaultValue)
+      : String(defaultValue);
+  const dataAttrs = `data-param="${name}" data-type="${schema.type || "string"}"`;
+
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    const options = schema.enum
+      .map((value) => {
+        const label = String(value).replace(/_/g, " ");
+        const selected = String(value) === String(defaultValue) ? " selected" : "";
+        return `<option value="${value}"${selected}>${label}</option>`;
+      })
+      .join("");
+    return `
+      <label>
+        ${title}
+        <select ${dataAttrs} name="${name}" multiple size="4">
+          ${options}
+        </select>
+        <p class="field-help">Select one or more values (Cmd/Ctrl + click).</p>
+        ${description}
+      </label>
+    `;
+  }
+
+  if (schema.type === "boolean") {
+    const trueSelected = defaultValue === true ? " selected" : "";
+    const falseSelected = defaultValue === false ? " selected" : "";
+    return `
+      <label>
+        ${title}
+        <select ${dataAttrs} name="${name}" multiple size="2">
+          <option value="true"${trueSelected}>True</option>
+          <option value="false"${falseSelected}>False</option>
+        </select>
+        <p class="field-help">Select one or both options.</p>
+        ${description}
+      </label>
+    `;
+  }
+
+  if (schema.type === "integer" || schema.type === "number") {
+    const placeholder = "e.g. 2,4,6 or 2-10:2";
+    return `
+      <label>
+        ${title}
+        <input name="${name}" type="text" value="${defaultString}" ${dataAttrs} placeholder="${placeholder}">
+        <p class="field-help">Provide comma-separated values or ranges (start-end[:step]). Leave blank to use strategy defaults.</p>
+        ${description}
+      </label>
+    `;
+  }
+
+  return `
+    <label>
+      ${title}
+      <input name="${name}" type="text" value="${defaultString}" ${dataAttrs} placeholder="Comma-separated values">
+      ${description}
+    </label>
+  `;
+}
+
+function renderPermutationParams(strategyName) {
+  if (!permutationParamsContainer) return;
+  permutationParamsContainer.innerHTML = "";
+
+  const strategy = singleStrategies.find((entry) => entry.name === strategyName);
+  if (!strategy || !strategy.parameters || !strategy.parameters.properties) {
+    permutationParamsContainer.dataset.empty = "Strategy exposes no tunable parameters for batching.";
+    return;
+  }
+
+  const { properties } = strategy.parameters;
+  const fields = Object.entries(properties)
+    .map(([name, schema]) => generatePermutationField(name, schema))
+    .join("");
+
+  permutationParamsContainer.removeAttribute("data-empty");
+  permutationParamsContainer.innerHTML = `
+    <div class="form-section-title">Parameter Ranges</div>
+    <div class="form-section-fields">${fields}</div>
+  `;
+}
+
+function collectPermutationParamRanges() {
+  if (!permutationParamsContainer) return {};
+  const params = {};
+  const fields = permutationParamsContainer.querySelectorAll("[data-param]");
+
+  fields.forEach((field) => {
+    const name = field.dataset.param;
+    const type = field.dataset.type || "string";
+
+    if (field instanceof HTMLSelectElement && field.multiple) {
+      const selected = Array.from(field.selectedOptions).map((option) => coerceValue(option.value, type));
+      if (selected.length) {
+        params[name] = uniqueValues(selected);
+      }
+      return;
+    }
+
+    if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+      const raw = field.value.trim();
+      if (!raw) return;
+      try {
+        const values = parseRangeValues(raw, type);
+        if (values.length) {
+          params[name] = values;
+        }
+      } catch (err) {
+        throw err;
+      }
+    }
+  });
+
+  return params;
+}
+
 // --- Single backtest ---------------------------------------------------------
 
-const inventoryList = document.getElementById("inventory-list");
-const inventoryRefreshBtn = document.getElementById("inventory-refresh");
-const fetchForm = document.getElementById("fetch-form");
-const fetchResult = document.getElementById("fetch-result");
-const backtestForm = document.getElementById("backtest-form");
-const backtestSummary = document.getElementById("backtest-summary");
-const backtestTrades = document.getElementById("backtest-trades");
-const exitReasonsContainer = document.getElementById("exit-reasons");
-const dailyChartCanvas = document.getElementById("daily-chart");
-const dailyChartPlaceholder = document.getElementById("daily-chart-empty");
-const dailyStatsTable = document.getElementById("daily-stats-table");
-const strategySelect = document.getElementById("single-strategy-select");
-const inventoryModal = document.getElementById("inventory-modal");
-const inventoryModalTitle = document.getElementById("modal-title");
-const inventoryModalBody = document.getElementById("modal-body-content");
-const inventoryModalClose = document.getElementById("modal-close");
-const strategyParamsContainer = document.getElementById("single-strategy-params");
-
-let singleStrategies = [];
-let dailyChart = null;
-
 async function loadSingleStrategies() {
-  if (!strategySelect) return;
   try {
     const strategies = await fetchJSON("/api/single/strategies");
     singleStrategies = Array.isArray(strategies) ? strategies : [];
 
-    const previousSelection = strategySelect.value;
-    strategySelect.innerHTML = "";
+    const previousSingle = strategySelect?.value;
+    const previousPermutation = permutationStrategySelect?.value;
+
+    if (strategySelect) {
+      strategySelect.innerHTML = "";
+    }
+    if (permutationStrategySelect) {
+      permutationStrategySelect.innerHTML = "";
+    }
 
     if (!singleStrategies.length) {
-      const option = document.createElement("option");
-      option.value = "";
-      option.textContent = "No strategies loaded";
-      strategySelect.appendChild(option);
+      if (strategySelect) {
+        const option = new Option("No strategies loaded", "");
+        strategySelect.add(option);
+      }
+      if (permutationStrategySelect) {
+        const option = new Option("No strategies loaded", "");
+        permutationStrategySelect.add(option);
+      }
       if (strategyParamsContainer) {
         strategyParamsContainer.innerHTML = "";
+      }
+      if (permutationParamsContainer) {
+        permutationParamsContainer.innerHTML = "";
+        permutationParamsContainer.dataset.empty = "Strategy exposes no tunable parameters for batching.";
       }
       return;
     }
 
     singleStrategies.forEach((item) => {
-      const option = document.createElement("option");
-      option.value = item.name;
-      option.textContent = item.title || item.name;
-      if (item.name === previousSelection) {
-        option.selected = true;
+      if (strategySelect) {
+        const option = new Option(item.title || item.name, item.name);
+        option.selected = item.name === previousSingle;
+        strategySelect.add(option);
       }
-      strategySelect.appendChild(option);
+      if (permutationStrategySelect) {
+        const option = new Option(item.title || item.name, item.name);
+        option.selected = item.name === previousPermutation;
+        permutationStrategySelect.add(option);
+      }
     });
 
-    if (!strategySelect.value) {
-      strategySelect.value = singleStrategies[0].name;
+    if (strategySelect) {
+      const hasPrevious = previousSingle && singleStrategies.some((entry) => entry.name === previousSingle);
+      if (!hasPrevious) {
+        strategySelect.value = singleStrategies[0].name;
+      }
+      renderSingleStrategyParams(strategySelect.value);
     }
-    renderSingleStrategyParams(strategySelect.value);
+
+    if (permutationStrategySelect) {
+      const hasPrevious = previousPermutation && singleStrategies.some((entry) => entry.name === previousPermutation);
+      if (!hasPrevious) {
+        const fallback = strategySelect?.value || singleStrategies[0].name;
+        permutationStrategySelect.value = fallback;
+      }
+      renderPermutationParams(permutationStrategySelect.value);
+    }
   } catch (err) {
-    setOutput(fetchResult, String(err), "Failed to load strategies.");
+    if (fetchResult) {
+      setOutput(fetchResult, String(err), "Failed to load strategies.");
+    }
     if (strategyParamsContainer) {
       strategyParamsContainer.innerHTML = "";
+    }
+    if (permutationParamsContainer) {
+      permutationParamsContainer.innerHTML = "";
+      permutationParamsContainer.dataset.empty = "Unable to load strategy parameters.";
     }
   }
 }
@@ -860,20 +1150,72 @@ async function handleBacktestSubmit(event) {
   }
 }
 
-// --- Permutation runner ------------------------------------------------------
+async function handlePermutationSubmit(event) {
+  event.preventDefault();
+  if (!permutationForm) return;
 
-const multiStrategySelect = document.getElementById("multi-strategy-select");
-const multiConfigForm = document.getElementById("multi-config-form");
-const multiStartBtn = document.getElementById("multi-start");
-const multiPauseBtn = document.getElementById("multi-pause");
-const multiResetBtn = document.getElementById("multi-reset");
-const multiClearBtn = document.getElementById("multi-clear");
-const multiRefreshBtn = document.getElementById("multi-refresh");
-const multiStatus = document.getElementById("multi-status");
-const multiHistoryBtn = document.getElementById("multi-history-refresh");
-const historyTable = document.getElementById("history-table");
+  const formData = new FormData(permutationForm);
+  const submitBtn = permutationForm.querySelector('button[type="submit"]');
+
+  const strategy = formData.get("strategy");
+  if (!strategy) {
+    setOutput(multiStatus, "Error: Select a strategy for the permutation batch.");
+    return;
+  }
+
+  const symbols = parseSymbolsInput(formData.get("symbols") || "");
+  if (!symbols.length) {
+    setOutput(multiStatus, "Error: Provide at least one symbol (comma or newline separated)." );
+    return;
+  }
+
+  const payload = {
+    strategy,
+    test_name: (formData.get("test_name") || "").trim() || null,
+    symbols,
+    start_date: formData.get("start_date"),
+    end_date: formData.get("end_date"),
+    starting_capital: Number(formData.get("starting_capital")),
+    qty_per_point: Number(formData.get("qty_per_point")),
+    max_workers: Number(formData.get("max_workers")),
+    exchange: (formData.get("exchange") || "NFO").toUpperCase(),
+    interval: formData.get("interval") || "5m",
+    param_ranges: {},
+  };
+
+  if (Number.isNaN(payload.starting_capital) || Number.isNaN(payload.qty_per_point) || Number.isNaN(payload.max_workers)) {
+    setOutput(multiStatus, "Error: Provide valid numeric values for capital, quantity, and workers.");
+    return;
+  }
+
+  try {
+    payload.param_ranges = collectPermutationParamRanges();
+  } catch (err) {
+    setOutput(multiStatus, `Error: ${err.message}`);
+    return;
+  }
+
+  try {
+    setBusy(submitBtn, true);
+    const configure = await fetchJSON("/api/multi/configure", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    setOutput(multiStatus, jsonStringify(configure.status));
+
+    const start = await fetchJSON("/api/multi/start", { method: "POST" });
+    setOutput(multiStatus, jsonStringify(start.status));
+
+    await Promise.all([updateMultiStatus(), refreshHistory()]);
+  } catch (err) {
+    setOutput(multiStatus, `Error: ${err.message}`);
+  } finally {
+    setBusy(submitBtn, false);
+  }
+}
 
 async function loadMultiStrategies() {
+  if (!multiStrategySelect) return;
   try {
     const data = await fetchJSON("/api/multi/strategies");
     const items = data.strategies || [];
@@ -915,15 +1257,15 @@ async function applyMultiConfig(event) {
   const formData = new FormData(multiConfigForm);
   const payload = {
     strategy: formData.get("strategy"),
-    symbols: (formData.get("symbols") || "")
-      .split(",")
-      .map((sym) => sym.trim())
-      .filter(Boolean),
+    symbols: parseSymbolsInput(formData.get("symbols") || ""),
     start_date: formData.get("start_date"),
     end_date: formData.get("end_date"),
     starting_capital: Number(formData.get("starting_capital")),
     qty_per_point: Number(formData.get("qty_per_point")),
     max_workers: Number(formData.get("max_workers")),
+    test_name: (formData.get("test_name") || "").trim() || null,
+    exchange: (formData.get("exchange") || "NFO").toUpperCase(),
+    interval: (formData.get("interval") || "5m"),
   };
 
   try {
@@ -977,7 +1319,7 @@ function renderHistory(rows) {
     const tr = document.createElement("tr");
     tr.className = "empty";
     const td = document.createElement("td");
-    td.colSpan = 5;
+    td.colSpan = 6;
     td.textContent = "No history yet.";
     tr.appendChild(td);
     tbody.appendChild(tr);
@@ -993,6 +1335,7 @@ function renderHistory(rows) {
       <td>${created}</td>
       <td>${row.strategy}</td>
       <td>${row.symbol}</td>
+      <td>${row.test_name || "—"}</td>
       <td><pre>${params}</pre></td>
       <td><pre>${summary}</pre></td>
     `;
@@ -1155,7 +1498,28 @@ if (fetchForm) fetchForm.addEventListener("submit", handleFetchSubmit);
 if (backtestForm) backtestForm.addEventListener("submit", handleBacktestSubmit);
 if (strategySelect) {
   strategySelect.addEventListener("change", (event) => {
-    renderSingleStrategyParams(event.target.value);
+    const { value } = event.target;
+    renderSingleStrategyParams(value);
+    if (permutationStrategySelect && currentRunMode === "permutation") {
+      permutationStrategySelect.value = value;
+      renderPermutationParams(value);
+    }
+  });
+}
+if (permutationStrategySelect) {
+  permutationStrategySelect.addEventListener("change", (event) => {
+    renderPermutationParams(event.target.value);
+  });
+}
+if (permutationForm) {
+  permutationForm.addEventListener("submit", handlePermutationSubmit);
+}
+if (runModeButtons.length) {
+  runModeButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const mode = button.dataset.mode || "single";
+      switchRunMode(mode);
+    });
   });
 }
 if (multiConfigForm) multiConfigForm.addEventListener("submit", applyMultiConfig);
@@ -1168,9 +1532,15 @@ if (multiHistoryBtn) multiHistoryBtn.addEventListener("click", refreshHistory);
 
 // --- Initial load ------------------------------------------------------------
 
+switchRunMode(currentRunMode);
+
 loadSingleStrategies()
   .then(() => refreshInventory())
-  .catch((err) => setOutput(fetchResult, `Error: ${err.message}`));
+  .catch((err) => {
+    if (fetchResult) {
+      setOutput(fetchResult, `Error: ${err.message}`);
+    }
+  });
 
 loadMultiStrategies()
   .then(() => Promise.all([updateMultiStatus(), refreshHistory()]))

@@ -231,6 +231,9 @@ class ConfigRequest(BaseModel):
     qty_per_point: float
     max_workers: int
     param_ranges: Dict[str, Any]
+    test_name: Optional[str] = None
+    exchange: Optional[str] = "NFO"
+    interval: Optional[str] = "5m"
 
 
 class ExportResponse(BaseModel):
@@ -246,6 +249,7 @@ class HistoryItem(BaseModel):
     symbol: str
     exchange: str
     interval: str
+    test_name: Optional[str] = None
     params: Dict[str, Any]
     summary: Dict[str, Any]
 
@@ -264,6 +268,7 @@ registry = get_registry()
 current_runner: Optional[PermutationRunner] = None
 current_strategy: Optional[str] = None
 current_base_config: Dict[str, Any] = {}
+current_test_name: Optional[str] = None
 
 
 def result_callback(result: Dict[str, Any]) -> None:
@@ -276,6 +281,7 @@ def result_callback(result: Dict[str, Any]) -> None:
             interval=current_base_config.get("interval", "5m"),
             params=result["params"],
             summary=result["summary"],
+            test_name=result.get("test_name") or current_test_name,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to persist permutation result: %s", exc)
@@ -283,7 +289,7 @@ def result_callback(result: Dict[str, Any]) -> None:
 
 def get_or_create_runner(strategy_name: Optional[str] = None) -> PermutationRunner:
     """Eagerly create the permutation runner when needed."""
-    global current_runner, current_strategy, current_base_config
+    global current_runner, current_strategy, current_base_config, current_test_name
 
     if current_runner and strategy_name and strategy_name != current_strategy:
         logger.info("Switching runner strategy from %s to %s", current_strategy, strategy_name)
@@ -324,6 +330,7 @@ def get_or_create_runner(strategy_name: Optional[str] = None) -> PermutationRunn
             param_ranges=default_ranges,
             max_workers=max_workers,
             on_result_callback=result_callback,
+            test_name=current_test_name,
         )
     return current_runner
 
@@ -558,6 +565,7 @@ def multi_status() -> Dict[str, Any]:
     runner = get_or_create_runner()
     status = runner.status()
     status["database"] = db_stats()
+    status["test_name"] = current_test_name
     return status
 
 
@@ -590,7 +598,7 @@ def multi_reset() -> ControlResponse:
 
 @app.post("/api/multi/configure", response_model=ControlResponse)
 def multi_configure(config: ConfigRequest) -> ControlResponse:
-    global current_runner, current_strategy, current_base_config
+    global current_runner, current_strategy, current_base_config, current_test_name
 
     try:
         strategy = registry.get_strategy(config.strategy)
@@ -601,8 +609,8 @@ def multi_configure(config: ConfigRequest) -> ControlResponse:
             )
 
         new_base_config = {
-            "exchange": "NFO",
-            "interval": "5m",
+            "exchange": (config.exchange or "NFO").upper(),
+            "interval": config.interval or "5m",
             "start_date": config.start_date,
             "end_date": config.end_date,
             "starting_capital": config.starting_capital,
@@ -613,6 +621,7 @@ def multi_configure(config: ConfigRequest) -> ControlResponse:
 
         param_ranges = config.param_ranges.copy()
         param_ranges["symbols"] = config.symbols
+        current_test_name = config.test_name
 
         if current_runner is None or current_strategy != config.strategy:
             if current_runner is not None:
@@ -627,6 +636,7 @@ def multi_configure(config: ConfigRequest) -> ControlResponse:
                 param_ranges=param_ranges,
                 max_workers=config.max_workers,
                 on_result_callback=result_callback,
+                test_name=current_test_name,
             )
         else:
             current_base_config = new_base_config
@@ -634,10 +644,12 @@ def multi_configure(config: ConfigRequest) -> ControlResponse:
                 base_config=new_base_config,
                 param_ranges=param_ranges,
                 max_workers=config.max_workers,
+                test_name=config.test_name,
             )
 
         status = current_runner.status()
         status["database"] = db_stats()
+        status["test_name"] = current_test_name
         return ControlResponse(status=status)
 
     except RuntimeError as exc:
@@ -653,6 +665,7 @@ def multi_clear_results() -> ControlResponse:
     runner = get_or_create_runner()
     status = runner.status()
     status["database"] = db_stats()
+    status["test_name"] = current_test_name
     return ControlResponse(status=status)
 
 
@@ -676,6 +689,7 @@ def multi_history() -> List[HistoryItem]:
                 symbol=row.get("symbol"),
                 exchange=row.get("exchange"),
                 interval=row.get("interval"),
+                test_name=row.get("test_name"),
                 params=params,
                 summary=summary,
             )
