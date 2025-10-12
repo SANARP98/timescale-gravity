@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tester App</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <main class="container">
+      <header>
+        <h1>Strategy Permutation Tester</h1>
+        <p>
+          Automate the Scalp-with-Trend parameter sweep for
+          <code>NIFTY28OCT2525200CE</code> and <code>NIFTY28OCT2525200PE</code>.
+          Press <strong>Start</strong> to iterate over every permutation, pause anytime, or reset the queue.
+        </p>
+      </header>
+
+      <section class="controls">
+        <button id="start-btn" class="primary">Start / Resume</button>
+        <button id="pause-btn" class="secondary">Pause</button>
+        <button id="reset-btn" class="secondary">Reset Queue</button>
+        <button id="clear-btn" class="danger">Clear Results</button>
+      </section>
+
+      <section class="export-panel">
+        <h2>Export Results</h2>
+        <button id="export-all-btn" class="secondary">Download All (CSV)</button>
+        <p class="export-help">Downloads all stored runs directly to your browser.</p>
+      </section>
+
+      <section class="status-card">
+        <h2>Status</h2>
+        <div id="status-message">Awaiting command…</div>
+        <dl id="status-stats" class="stats-grid"></dl>
+      </section>
+
+      <section class="result-card">
+        <h2>Last Result</h2>
+        <div id="last-result" class="result-grid" data-empty="No runs yet. Start the tester to generate data."></div>
+      </section>
+
+      <section class="db-card">
+        <h2>Database</h2>
+        <div id="db-stats" class="db-grid"></div>
+      </section>
+
+      <section class="history-card">
+        <h2>Previous Runs</h2>
+        <p id="history-status" class="history-status">Loading…</p>
+        <div class="history-actions">
+          <button id="history-export-all-btn" class="secondary">Export All Runs</button>
+        </div>
+        <div class="history-table-wrapper">
+          <table id="history-table" class="history-table">
+            <thead>
+              <tr>
+                <th>Created</th>
+                <th>Symbol</th>
+                <th>Target / Stop</th>
+                <th>EMA (fast/slow)</th>
+                <th>ATR Min</th>
+                <th>Daily Loss Cap</th>
+                <th>Trades</th>
+                <th>Winrate %</th>
+                <th>Net ₹</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

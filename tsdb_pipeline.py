@@ -576,7 +576,15 @@ def read_ohlcv_from_tsdb(
             WHERE {' AND '.join(where)}
             ORDER BY ts ASC
         """
-        df = pd.read_sql(sql, conn, params=params, parse_dates=["ts"])
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame.from_records(rows)
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
 
     df = df.set_index("ts")
     idx = pd.to_datetime(df.index)
