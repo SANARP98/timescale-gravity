@@ -166,6 +166,64 @@ function clearStatusClasses(element) {
   element.classList.remove("status-success", "status-error");
 }
 
+function toDateInputValue(timestamp) {
+  if (!timestamp) return "";
+  if (typeof timestamp !== "string") {
+    return "";
+  }
+  const [datePart] = timestamp.split("T");
+  return datePart || "";
+}
+
+function setFormValue(form, name, value) {
+  if (!form) return;
+  const field = form.elements.namedItem(name);
+  if (
+    field instanceof HTMLInputElement ||
+    field instanceof HTMLSelectElement
+  ) {
+    field.value = value ?? "";
+  }
+}
+
+function populateFormsFromInventory(item) {
+  if (!item) return;
+  const { symbol, exchange, interval, startTs, endTs } = item;
+  const startDate = toDateInputValue(startTs);
+  const endDate = toDateInputValue(endTs);
+
+  if (fetchForm) {
+    setFormValue(fetchForm, "symbol", symbol);
+    setFormValue(fetchForm, "exchange", exchange);
+    setFormValue(fetchForm, "interval", interval);
+    const fetchStart = toDateInputValue(endTs) || startDate;
+    setFormValue(fetchForm, "start_date", fetchStart);
+    setFormValue(fetchForm, "end_date", endDate || fetchStart);
+    if (fetchResultBox) {
+      clearStatusClasses(fetchResultBox);
+      fetchResultBox.textContent =
+        endDate
+          ? `Prefilled using TimescaleDB coverage (${fetchStart} → ${endDate}).`
+          : "Prefilled using TimescaleDB coverage.";
+    }
+  }
+
+  if (backtestForm) {
+    setFormValue(backtestForm, "symbol", symbol);
+    setFormValue(backtestForm, "exchange", exchange);
+    setFormValue(backtestForm, "interval", interval);
+    if (startDate) setFormValue(backtestForm, "start_date", startDate);
+    if (endDate) setFormValue(backtestForm, "end_date", endDate);
+    if (backtestMessage) {
+      clearStatusClasses(backtestMessage);
+      backtestMessage.textContent =
+        startDate && endDate
+          ? `Ready to backtest ${symbol} ${interval} (${startDate} → ${endDate}).`
+          : `Ready to backtest ${symbol} ${interval}.`;
+    }
+  }
+}
+
 function renderInventoryTable(items) {
   if (!items || items.length === 0) {
     return "";
@@ -180,6 +238,19 @@ function renderInventoryTable(items) {
         <td>${Number(item.rows_count).toLocaleString()}</td>
         <td>${formatTimestamp(item.start_ts)}</td>
         <td>${formatTimestamp(item.end_ts)}</td>
+        <td>
+          <button
+            type="button"
+            class="table-action"
+            data-symbol="${item.symbol}"
+            data-exchange="${item.exchange}"
+            data-interval="${item.interval}"
+            data-start-ts="${item.start_ts ?? ""}"
+            data-end-ts="${item.end_ts ?? ""}"
+          >
+            Use in forms
+          </button>
+        </td>
       </tr>`
     )
     .join("");
@@ -193,6 +264,7 @@ function renderInventoryTable(items) {
           <th>Bars</th>
           <th>First Bar (IST)</th>
           <th>Last Bar (IST)</th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -305,6 +377,20 @@ if (backtestForm) {
 if (inventoryRefresh) {
   inventoryRefresh.addEventListener("click", () => {
     loadInventory();
+  });
+}
+
+if (inventoryBox) {
+  inventoryBox.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-symbol]");
+    if (!button) return;
+    populateFormsFromInventory({
+      symbol: button.dataset.symbol || "",
+      exchange: button.dataset.exchange || "",
+      interval: button.dataset.interval || "",
+      startTs: button.dataset.startTs || "",
+      endTs: button.dataset.endTs || "",
+    });
   });
 }
 

@@ -31,6 +31,10 @@ API_KEY = os.getenv("API_KEY")
 API_HOST = os.getenv("OPENALGO_API_HOST")
 
 
+# ---------- CONSTANTS ----------
+IST_TZ = "Asia/Kolkata"
+
+
 # ---------- DB ----------
 def get_conn():
     return psycopg2.connect(
@@ -77,6 +81,35 @@ def ensure_schema():
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(SCHEMA_SQL)
         conn.commit()
+
+
+def get_series_coverage(symbol: str, exchange: str, interval: str) -> Optional[dict]:
+    """Return coverage metadata (min/max ts, row count) for a series."""
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*)::bigint AS rows_count
+            FROM ohlcv
+            WHERE symbol = %(symbol)s
+              AND exchange = %(exchange)s
+              AND interval = %(interval)s
+        """,
+            {"symbol": symbol, "exchange": exchange, "interval": interval},
+        )
+        row = cur.fetchone()
+
+    if not row or row[2] == 0:
+        return None
+
+    first_ts = pd.to_datetime(row[0], utc=True) if row[0] else None
+    last_ts = pd.to_datetime(row[1], utc=True) if row[1] else None
+
+    return {
+        "first_ts": first_ts,
+        "last_ts": last_ts,
+        "rows_count": int(row[2]),
+    }
 
 
 def _as_rows(df: pd.DataFrame, symbol: str, exchange: str, interval: str):
@@ -198,7 +231,7 @@ def list_available_series(target_tz: Optional[str] = "Asia/Kolkata") -> list[dic
                 COUNT(*)::bigint AS rows_count
             FROM ohlcv
             GROUP BY symbol, exchange, interval
-            ORDER BY symbol, exchange, interval;
+            ORDER BY last_ts DESC;
         """
         df = pd.read_sql(sql, conn, parse_dates=["first_ts", "last_ts"])
 
@@ -236,6 +269,67 @@ def fetch_history_to_tsdb(
     """Pull from OpenAlgo → upsert into TimescaleDB"""
     ensure_schema()
 
+    def _coerce_ist(value: str, field_name: str) -> pd.Timestamp:
+        if not value:
+            raise ValueError(f"{field_name} is required")
+        try:
+            ts = pd.to_datetime(value)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Invalid {field_name}: {value}") from exc
+        if ts.tzinfo is None:
+            ts = ts.tz_localize(IST_TZ)
+        else:
+            ts = ts.tz_convert(IST_TZ)
+        return ts
+
+    start_ist = _coerce_ist(start_date, "start_date")
+    end_ist = _coerce_ist(end_date, "end_date")
+
+    if end_ist < start_ist:
+        raise ValueError("end_date must be on or after start_date")
+
+    requested_start_date = start_ist.date()
+    requested_end_date = end_ist.date()
+
+    fetch_start_date = requested_start_date
+    fetch_end_date = requested_end_date
+
+    coverage = get_series_coverage(symbol, exchange, interval)
+    if coverage and coverage["first_ts"] is not None and coverage["last_ts"] is not None:
+        coverage_start_date = coverage["first_ts"].tz_convert(IST_TZ).date()
+        coverage_end_date = coverage["last_ts"].tz_convert(IST_TZ).date()
+
+        if (
+            requested_start_date >= coverage_start_date
+            and requested_end_date <= coverage_end_date
+        ):
+            print(
+                f"ℹ️ Requested {symbol} {exchange} {interval} window "
+                f"{requested_start_date} → {requested_end_date} already present in TimescaleDB."
+            )
+            return 0
+
+        if (
+            requested_end_date > coverage_end_date
+            and requested_start_date >= coverage_start_date
+        ):
+            fetch_start_date = max(requested_start_date, coverage_end_date)
+
+    fetch_start_str = fetch_start_date.isoformat()
+    fetch_end_str = fetch_end_date.isoformat()
+
+    if fetch_start_date > fetch_end_date:
+        print(
+            f"ℹ️ No new range to fetch for {symbol} {exchange} {interval} after considering existing coverage."
+        )
+        return 0
+
+    if (fetch_start_date, fetch_end_date) != (requested_start_date, requested_end_date):
+        print(
+            f"ℹ️ Adjusted fetch window for {symbol} {exchange} {interval} to "
+            f"{fetch_start_str} → {fetch_end_str} to avoid refetching stored data."
+        )
+
     try:
         from openalgo import api as openalgo_api  # pylint: disable=import-error
     except ImportError as exc:  # pragma: no cover
@@ -249,8 +343,8 @@ def fetch_history_to_tsdb(
         symbol=symbol,
         exchange=exchange,
         interval=interval,
-        start_date=start_date,
-        end_date=end_date,
+        start_date=fetch_start_str,
+        end_date=fetch_end_str,
     )
     df = _to_dataframe(raw)
     if df.empty:
