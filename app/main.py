@@ -10,7 +10,13 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from backtest_tsdb import run_backtest_from_config
-from tsdb_pipeline import fetch_history_to_tsdb, list_available_series, delete_series
+from symbol_utils import get_option_pair, is_option_symbol
+from tsdb_pipeline import (
+    fetch_history_to_tsdb,
+    list_available_series,
+    delete_series,
+    get_series_coverage,
+)
 
 TRADE_COLUMNS = [
     "entry_time",
@@ -132,12 +138,21 @@ class BacktestRequest(BaseModel):
         allow_population_by_field_name = True
 
 
+class FetchEvent(BaseModel):
+    symbol: str
+    start_date: str
+    end_date: str
+    rows_upserted: int
+    reason: Optional[str] = None
+
+
 class BacktestResponse(BaseModel):
     summary: Dict[str, Any]
     trades_tail: List[Dict[str, Any]]
     trades_all: List[Dict[str, Any]]
     daily_stats: List[Dict[str, Any]]
     output_csv: Optional[str] = None
+    fetch_events: List[FetchEvent] = Field(default_factory=list)
 
 
 app = FastAPI(title="Timescale Gravity API", version="1.0.0")
@@ -170,7 +185,11 @@ def inventory(sort_order: str = "asc"):
     Query params:
         sort_order: "asc" or "desc" (default: asc)
     """
-    return list_available_series(sort_order=sort_order)
+    order = sort_order.lower()
+    if order not in {"asc", "desc"}:
+        raise HTTPException(status_code=400, detail="sort_order must be 'asc' or 'desc'")
+
+    return list_available_series(sort_order=order)
 
 
 @app.delete("/inventory/{symbol}/{exchange}/{interval}")
@@ -188,6 +207,84 @@ def delete_inventory(symbol: str, exchange: str, interval: str):
         return {"rows_deleted": rows_deleted, "message": f"Deleted {rows_deleted} rows for {symbol} {exchange} {interval}"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+IST_TZ = "Asia/Kolkata"
+
+
+def _to_ist_timestamp(value: str) -> pd.Timestamp:
+    ts = pd.to_datetime(value)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize(IST_TZ)
+    else:
+        ts = ts.tz_convert(IST_TZ)
+    return ts
+
+
+def ensure_option_data(cfg: Dict[str, Any]) -> List[FetchEvent]:
+    symbol = cfg.get("symbol")
+    exchange = cfg.get("exchange")
+    interval = cfg.get("interval")
+    start_date = cfg.get("start_date")
+    end_date = cfg.get("end_date")
+    option_selection = (cfg.get("option_selection") or "both").lower()
+
+    if not symbol or not start_date or not end_date:
+        return []
+
+    if not is_option_symbol(symbol):
+        return []
+
+    pe_symbol, ce_symbol = get_option_pair(symbol)
+    if not pe_symbol or not ce_symbol:
+        return []
+
+    desired_symbols: List[str] = []
+    if option_selection == "pe":
+        desired_symbols = [pe_symbol]
+    elif option_selection == "ce":
+        desired_symbols = [ce_symbol]
+    else:
+        desired_symbols = [pe_symbol, ce_symbol]
+
+    requested_start = _to_ist_timestamp(start_date)
+    requested_end = _to_ist_timestamp(end_date)
+
+    fetch_events: List[FetchEvent] = []
+
+    for sym in desired_symbols:
+        coverage = get_series_coverage(sym, exchange, interval)
+        needs_fetch = True
+
+        if coverage and coverage.get("first_ts") and coverage.get("last_ts"):
+            coverage_start = coverage["first_ts"].tz_convert(IST_TZ)
+            coverage_end = coverage["last_ts"].tz_convert(IST_TZ)
+            if coverage_start <= requested_start and coverage_end >= requested_end:
+                needs_fetch = False
+
+        if needs_fetch:
+            try:
+                rows = fetch_history_to_tsdb(
+                    symbol=sym,
+                    exchange=exchange,
+                    interval=interval,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            except RuntimeError as exc:  # propagate as HTTP error later
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            if rows > 0:
+                fetch_events.append(
+                    FetchEvent(
+                        symbol=sym,
+                        start_date=start_date,
+                        end_date=end_date,
+                        rows_upserted=rows,
+                        reason="auto_fetch_missing_option",
+                    )
+                )
+
+    return fetch_events
 
 
 @app.post("/fetch", response_model=FetchResponse)
@@ -214,6 +311,7 @@ def run_backtest_api(payload: BacktestRequest):
     write_csv = cfg.pop("write_csv", False)
     last_n = cfg.pop("last_n_trades", 10)
 
+    fetch_events = ensure_option_data(cfg)
     result = run_backtest_from_config(cfg, write_csv=write_csv)
     summary = result.get("summary")
     if summary is None:
@@ -244,4 +342,5 @@ def run_backtest_api(payload: BacktestRequest):
         trades_all=trades_all,
         daily_stats=daily_stats,
         output_csv=result.get("output_csv"),
+        fetch_events=fetch_events,
     )

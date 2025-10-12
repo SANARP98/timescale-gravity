@@ -75,10 +75,17 @@ a {
 }
 
 .layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: 2rem;
+  align-items: flex-start;
+}
+
+.sidebar,
+.content {
   display: flex;
   flex-direction: column;
   gap: 2rem;
-  max-width: 100%;
 }
 
 .card {
@@ -120,6 +127,46 @@ a {
 
 .card-header h2 {
   margin: 0;
+}
+
+.button-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.collapsible {
+  border: 1px solid rgba(80, 92, 134, 0.25);
+}
+
+.collapsible .collapsible-trigger {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.collapsible .collapsible-trigger:hover .collapse-icon {
+  color: #58b5ff;
+}
+
+.collapse-icon {
+  font-size: 0.9rem;
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+.collapsible-content {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease;
+}
+
+.collapsible.open .collapsible-content {
+  max-height: 1200px;
 }
 
 .form-grid {
@@ -187,6 +234,46 @@ button {
 button:hover {
   transform: translateY(-1px);
   box-shadow: 0 10px 25px rgba(51, 102, 255, 0.35);
+}
+
+.primary-btn,
+.secondary-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 999px;
+  padding: 0.65rem 1.4rem;
+  font-weight: 600;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.secondary-btn {
+  background: rgba(88, 181, 255, 0.12);
+  border: 1px solid rgba(88, 181, 255, 0.35);
+  color: #c5cde0;
+}
+
+.secondary-btn:hover {
+  box-shadow: 0 8px 18px rgba(88, 181, 255, 0.25);
+}
+
+.btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(11, 13, 23, 0.25);
+  border-top-color: #0b0d17;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+.btn-spinner.hidden {
+  display: none;
+}
+
+.btn-text {
+  display: inline-flex;
+  align-items: center;
 }
 
 button.table-action {
@@ -329,6 +416,25 @@ th {
   color: rgba(197, 205, 224, 0.85);
 }
 
+th .header-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.sort-arrow {
+  font-size: 0.75rem;
+  opacity: 0.85;
+}
+
+tbody tr:nth-child(even) {
+  background: rgba(18, 21, 34, 0.4);
+}
+
+tbody tr:hover {
+  background: rgba(88, 181, 255, 0.08);
+}
+
 th.sortable-header {
   cursor: pointer;
   user-select: none;
@@ -393,6 +499,58 @@ th.sortable-header:hover .sort-arrow {
 
 .daily-stats-table tr.negative td:nth-child(2) {
   color: #ff8b8b;
+}
+
+.toast-container {
+  position: fixed;
+  top: 1.25rem;
+  right: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  z-index: 1500;
+}
+
+.toast {
+  min-width: 260px;
+  max-width: 360px;
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  background: rgba(18, 21, 34, 0.96);
+  color: #f5f7ff;
+  border: 1px solid rgba(80, 92, 134, 0.45);
+  box-shadow: 0 18px 32px rgba(4, 8, 24, 0.32);
+  opacity: 0;
+  transform: translateX(24px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.toast.visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.toast.hide {
+  opacity: 0;
+  transform: translateX(24px);
+}
+
+.toast.toast-success {
+  border-color: rgba(111, 255, 181, 0.55);
+}
+
+.toast.toast-info {
+  border-color: rgba(88, 181, 255, 0.55);
+}
+
+.toast.toast-error {
+  border-color: rgba(255, 139, 139, 0.55);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 
@@ -584,6 +742,11 @@ table tbody tr:hover {
     padding: 0 1rem 2.5rem;
   }
 
+  .layout {
+    display: flex;
+    flex-direction: column;
+  }
+
   .card {
     padding: 1.5rem;
   }
@@ -592,7 +755,8 @@ table tbody tr:hover {
     justify-content: stretch;
   }
 
-  button {
+  .form-actions button,
+  .button-row button {
     width: 100%;
   }
 

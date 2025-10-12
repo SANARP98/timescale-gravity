@@ -12,8 +12,66 @@ const tradesAllPanel = document.getElementById("trades-all");
 const dailyChartCanvas = document.getElementById("daily-chart");
 const dailyChartPlaceholder = document.getElementById("daily-chart-empty");
 const dailyStatsTable = document.getElementById("daily-stats-table");
+const toastContainer = document.getElementById("toast-container");
 
 let dailyChart = null;
+let currentInventorySort = "asc";
+
+function setButtonLoading(button, isLoading, loadingText = "Loading...") {
+  if (!button) return;
+  const textEl = button.querySelector(".btn-text");
+  const spinnerEl = button.querySelector(".btn-spinner");
+
+  if (isLoading) {
+    if (textEl) {
+      if (!button.dataset.originalText) {
+        button.dataset.originalText = textEl.textContent || "";
+      }
+      textEl.textContent = loadingText;
+    }
+    if (spinnerEl) {
+      spinnerEl.classList.remove("hidden");
+    }
+    button.disabled = true;
+  } else {
+    if (textEl) {
+      const original = button.dataset.originalText || textEl.textContent || "";
+      textEl.textContent = original;
+    }
+    if (spinnerEl) {
+      spinnerEl.classList.add("hidden");
+    }
+    button.disabled = false;
+    if (button.dataset.originalText) {
+      delete button.dataset.originalText;
+    }
+  }
+}
+
+function showToast(message, type = "info", duration = 5000) {
+  if (!toastContainer) return;
+
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  toastContainer.appendChild(toast);
+
+  requestAnimationFrame(() => {
+    toast.classList.add("visible");
+  });
+
+  const hide = () => {
+    toast.classList.remove("visible");
+    toast.classList.add("hide");
+    setTimeout(() => {
+      toast.remove();
+    }, 250);
+  };
+
+  setTimeout(hide, duration);
+
+  toast.addEventListener("click", hide, { once: true });
+}
 
 function toPayload(form) {
   const payload = {};
@@ -296,6 +354,7 @@ function populateFormsFromInventory(item) {
     setFormValue(backtestForm, "symbol", symbol);
     setFormValue(backtestForm, "exchange", exchange);
     setFormValue(backtestForm, "interval", interval);
+    setFormValue(backtestForm, "option_selection", "both");
     if (startDate) setFormValue(backtestForm, "start_date", startDate);
     if (endDate) setFormValue(backtestForm, "end_date", endDate);
     if (backtestMessage) {
@@ -611,10 +670,36 @@ function setActiveTab(target) {
   });
 }
 
+function setupCollapsibles() {
+  document.querySelectorAll(".collapsible").forEach((section) => {
+    const trigger = section.querySelector(".collapsible-trigger");
+    const content = section.querySelector(".collapsible-content");
+    const icon = section.querySelector(".collapse-icon");
+    if (!trigger || !content) return;
+
+    if (section.classList.contains("open")) {
+      content.style.maxHeight = `${content.scrollHeight}px`;
+      if (icon) icon.textContent = "▲";
+    }
+
+    trigger.addEventListener("click", () => {
+      const isOpen = section.classList.toggle("open");
+      if (isOpen) {
+        content.style.maxHeight = `${content.scrollHeight}px`;
+        if (icon) icon.textContent = "▲";
+      } else {
+        content.style.maxHeight = null;
+        if (icon) icon.textContent = "▼";
+      }
+    });
+  });
+}
+
 async function loadInventory(sortOrder = "asc") {
   if (!inventoryBox) return;
   clearStatusClasses(inventoryBox);
   inventoryBox.textContent = "Loading...";
+  currentInventorySort = sortOrder;
   try {
     const response = await fetch(`/inventory?sort_order=${sortOrder}`);
     if (!response.ok) {
@@ -627,6 +712,11 @@ async function loadInventory(sortOrder = "asc") {
       return;
     }
     inventoryBox.innerHTML = renderInventoryTable(items, sortOrder);
+    const section = inventoryBox.closest(".collapsible");
+    const content = section?.querySelector(".collapsible-content");
+    if (section && section.classList.contains("open") && content) {
+      content.style.maxHeight = `${content.scrollHeight}px`;
+    }
   } catch (error) {
     inventoryBox.textContent = `Error loading inventory: ${error.message}`;
     inventoryBox.classList.add("status-error");
@@ -649,14 +739,11 @@ async function deleteInventoryItem(symbol, exchange, interval) {
     }
 
     const data = await response.json();
-    alert(`✅ ${data.message}`);
+    showToast(`✅ ${data.message}`, "success");
 
-    // Reload inventory with current sort order
-    const sortHeader = inventoryBox?.querySelector(".sortable-header");
-    const currentSort = sortHeader?.dataset.sortOrder || "asc";
-    await loadInventory(currentSort);
+    await loadInventory(currentInventorySort);
   } catch (error) {
-    alert(`❌ Error: ${error.message}`);
+    showToast(`❌ ${error.message}`, "error");
   }
 }
 
@@ -664,13 +751,7 @@ async function handleFetchSubmit(event) {
   event.preventDefault();
   const payload = toPayload(fetchForm);
   const submitBtn = fetchForm.querySelector('button[type="submit"]');
-  const btnText = submitBtn.querySelector('.btn-text');
-  const btnSpinner = submitBtn.querySelector('.btn-spinner');
-
-  // Show loading state
-  submitBtn.disabled = true;
-  btnText.textContent = "Fetching...";
-  btnSpinner.classList.remove("hidden");
+  setButtonLoading(submitBtn, true, "Fetching...");
   setStatus(fetchResultBox, "Submitting request to OpenAlgo...", false);
 
   try {
@@ -691,14 +772,13 @@ async function handleFetchSubmit(event) {
       `✅ Upserted ${data.rows_upserted} rows into TimescaleDB.`,
       false
     );
-    await loadInventory();
+    showToast(`Upserted ${data.rows_upserted} rows into TimescaleDB.`, "success");
+    await loadInventory(currentInventorySort);
   } catch (error) {
     setStatus(fetchResultBox, `❌ ${error.message}`, true);
+    showToast(`❌ ${error.message}`, "error");
   } finally {
-    // Reset loading state
-    submitBtn.disabled = false;
-    btnText.textContent = "Fetch & Upsert";
-    btnSpinner.classList.add("hidden");
+    setButtonLoading(submitBtn, false);
   }
 }
 
@@ -706,13 +786,7 @@ async function handleBacktestSubmit(event) {
   event.preventDefault();
   const payload = toPayload(backtestForm);
   const submitBtn = backtestForm.querySelector('button[type="submit"]');
-  const btnText = submitBtn.querySelector('.btn-text');
-  const btnSpinner = submitBtn.querySelector('.btn-spinner');
-
-  // Show loading state
-  submitBtn.disabled = true;
-  btnText.textContent = "Running...";
-  btnSpinner.classList.remove("hidden");
+  setButtonLoading(submitBtn, true, "Running...");
   setStatus(backtestMessage, "Running backtest from TimescaleDB...", false);
   backtestSummaryBox.innerHTML = "";
   clearTradesPanels();
@@ -732,6 +806,18 @@ async function handleBacktestSubmit(event) {
 
     const data = await response.json();
     setStatus(backtestMessage, "✅ Backtest completed successfully!", false);
+    showToast("Backtest completed successfully!", "success");
+
+    if (Array.isArray(data.fetch_events) && data.fetch_events.length) {
+      data.fetch_events.forEach((event) => {
+        const range = `${event.start_date} → ${event.end_date}`;
+        const rowsValue = Number(event.rows_upserted || 0);
+        const rowsText = rowsValue
+          ? `${rowsValue.toLocaleString()} rows`
+          : "no new rows";
+        showToast(`Auto-fetched ${event.symbol} for ${range} (${rowsText}).`, "info", 6500);
+      });
+    }
 
     if (data.output_csv) {
       backtestMessage.innerHTML += `<br><span class="status-success">📁 Saved CSV: ${data.output_csv}</span>`;
@@ -763,11 +849,9 @@ async function handleBacktestSubmit(event) {
     setActiveTab("recent");
   } catch (error) {
     setStatus(backtestMessage, `❌ ${error.message}`, true);
+    showToast(`❌ ${error.message}`, "error");
   } finally {
-    // Reset loading state
-    submitBtn.disabled = false;
-    btnText.textContent = "Run Backtest";
-    btnSpinner.classList.add("hidden");
+    setButtonLoading(submitBtn, false);
   }
 }
 
@@ -780,11 +864,16 @@ if (backtestForm) {
 }
 
 if (inventoryRefresh) {
-  inventoryRefresh.addEventListener("click", () => {
-    // Get current sort order from table header if exists
-    const sortHeader = inventoryBox?.querySelector(".sortable-header");
-    const currentSort = sortHeader?.dataset.sortOrder || "asc";
-    loadInventory(currentSort);
+  inventoryRefresh.addEventListener("click", async () => {
+    setButtonLoading(inventoryRefresh, true, "Refreshing...");
+    try {
+      await loadInventory(currentInventorySort);
+      showToast("Inventory refreshed", "info", 3500);
+    } catch (error) {
+      showToast(`❌ ${error.message}`, "error");
+    } finally {
+      setButtonLoading(inventoryRefresh, false);
+    }
   });
 }
 
@@ -795,6 +884,7 @@ if (inventoryBox) {
     if (sortHeader) {
       const currentSort = sortHeader.dataset.sortOrder || "asc";
       const newSort = currentSort === "asc" ? "desc" : "asc";
+      currentInventorySort = newSort;
       loadInventory(newSort);
       return;
     }
@@ -831,23 +921,5 @@ if (tradesTabs.length > 0) {
   setActiveTab("recent");
 }
 
-loadInventory();
-
-// Collapsible sections functionality
-document.querySelectorAll(".collapsible-trigger").forEach((trigger) => {
-  trigger.addEventListener("click", () => {
-    const section = trigger.closest(".collapsible");
-    const content = section.querySelector(".collapsible-content");
-    const icon = trigger.querySelector(".collapse-icon");
-
-    if (content.style.maxHeight) {
-      content.style.maxHeight = null;
-      section.classList.remove("expanded");
-      icon.textContent = "▼";
-    } else {
-      content.style.maxHeight = content.scrollHeight + "px";
-      section.classList.add("expanded");
-      icon.textContent = "▲";
-    }
-  });
-});
+loadInventory(currentInventorySort);
+setupCollapsibles();
