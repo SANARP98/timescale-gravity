@@ -9,9 +9,11 @@ const tradesTabs = document.querySelectorAll(".tab-button");
 const tradesPanels = document.querySelectorAll(".tab-panel");
 const tradesRecentPanel = document.getElementById("trades-recent");
 const tradesAllPanel = document.getElementById("trades-all");
-const dailyChartImage = document.getElementById("daily-chart-image");
+const dailyChartCanvas = document.getElementById("daily-chart");
 const dailyChartPlaceholder = document.getElementById("daily-chart-empty");
 const dailyStatsTable = document.getElementById("daily-stats-table");
+
+let dailyChart = null;
 
 function toPayload(form) {
   const payload = {};
@@ -75,13 +77,46 @@ function renderMetrics(summary) {
     .filter(([key]) => key in summary)
     .map(([key, label, formatter]) => {
       const raw = summary[key];
-      const value =
+      const numeric = Number(raw);
+      let value =
         typeof formatter === "function"
           ? formatter(Number(raw))
           : typeof raw === "number"
           ? Number(raw).toLocaleString()
           : raw;
-      return `<li><span class="label">${label}</span><span class="value">${value}</span></li>`;
+
+      if (value === undefined || value === null || value === "") {
+        value = "—";
+      }
+
+      let metricClass = "";
+      if (Number.isFinite(numeric)) {
+        if (key === "net_rupees" || key === "roi_percent") {
+          metricClass = numeric > 0 ? "positive" : numeric < 0 ? "negative" : "";
+        } else if (key === "avg_win") {
+          metricClass = numeric > 0 ? "positive" : "";
+        } else if (key === "avg_loss" || key === "max_drawdown") {
+          metricClass = numeric < 0 ? "negative" : "";
+        } else if (key === "gross_rupees") {
+          metricClass = numeric > 0 ? "positive" : "";
+        } else if (key === "costs_rupees") {
+          metricClass = numeric > 0 ? "negative" : "";
+        } else if (key === "wins") {
+          metricClass = numeric > 0 ? "positive" : "";
+        } else if (key === "losses") {
+          metricClass = numeric > 0 ? "negative" : "";
+        } else if (key === "winrate_percent") {
+          metricClass = numeric >= 50 ? "positive" : numeric > 0 ? "negative" : "";
+        }
+      }
+
+      if (value !== "—" && (key.includes("rupees") || key === "avg_win" || key === "avg_loss" || key === "max_drawdown")) {
+        value = `₹${value}`;
+      }
+
+      const valueClass = metricClass ? `value ${metricClass}` : "value";
+      const itemClass = metricClass ? `metric-${metricClass}` : "";
+      return `<li class="${itemClass}"><span class="label">${label}</span><span class="${valueClass}">${value}</span></li>`;
     })
     .join("");
 
@@ -135,6 +170,11 @@ function renderTrades(trades, heading) {
                 cellClass = numeric >= 0 ? "positive" : "negative";
               }
             }
+            if (header.endsWith("rupees")) {
+              formatted = `₹${formatted}`;
+            }
+          } else if (header.endsWith("rupees") && value !== null && value !== undefined && value !== "") {
+            formatted = `₹${formatValue(value)}`;
           } else if (value === null || value === undefined) {
             formatted = "";
           }
@@ -322,9 +362,16 @@ function clearTradesPanels() {
 }
 
 function resetDailyVisuals() {
-  if (dailyChartImage) {
-    dailyChartImage.classList.add("hidden");
-    dailyChartImage.src = "";
+  if (dailyChart) {
+    dailyChart.destroy();
+    dailyChart = null;
+  }
+  if (dailyChartCanvas) {
+    const ctx = dailyChartCanvas.getContext("2d");
+    if (ctx) {
+      ctx.clearRect(0, 0, dailyChartCanvas.width, dailyChartCanvas.height);
+    }
+    dailyChartCanvas.classList.add("hidden");
   }
   if (dailyChartPlaceholder) {
     dailyChartPlaceholder.textContent = "Run a backtest to visualize daily performance.";
@@ -335,21 +382,31 @@ function resetDailyVisuals() {
 }
 
 function renderDailyChart(stats) {
-  if (!dailyChartImage) {
+  if (!dailyChartCanvas || typeof Chart === "undefined") {
     return;
   }
 
+  if (dailyChart) {
+    dailyChart.destroy();
+    dailyChart = null;
+  }
+
   if (!stats || stats.length === 0) {
-    if (dailyChartImage) {
-      dailyChartImage.classList.add("hidden");
-      dailyChartImage.src = "";
-    }
+    if (dailyChartCanvas) dailyChartCanvas.classList.add("hidden");
     if (dailyChartPlaceholder) dailyChartPlaceholder.textContent = "No trades to chart.";
     return;
   }
 
   const labels = stats.map((item) => item.date_label || item.date);
   const data = stats.map((item) => Number(item.net_pnl) || 0);
+
+  // Calculate cumulative P&L
+  let cumulative = 0;
+  const cumulativeData = data.map((value) => {
+    cumulative += value;
+    return cumulative;
+  });
+
   const backgroundColors = data.map((value) =>
     value >= 0 ? "rgba(88, 181, 255, 0.65)" : "rgba(255, 118, 132, 0.65)"
   );
@@ -357,51 +414,125 @@ function renderDailyChart(stats) {
     value >= 0 ? "rgba(88, 181, 255, 0.95)" : "rgba(255, 118, 132, 0.95)"
   );
 
-  const offscreenCanvas = document.createElement("canvas");
-  offscreenCanvas.width = Math.max(480, labels.length * 60);
-  offscreenCanvas.height = 260;
-  const ctx = offscreenCanvas.getContext("2d");
-  if (!ctx || typeof Chart === "undefined") {
-    return;
-  }
-
-  new Chart(ctx, {
+  dailyChartCanvas.classList.remove("hidden");
+  const parentWidth = dailyChartCanvas.parentElement
+    ? dailyChartCanvas.parentElement.clientWidth
+    : 600;
+  dailyChartCanvas.height = 400;
+  dailyChartCanvas.width = Math.max(parentWidth, 320);
+  dailyChart = new Chart(dailyChartCanvas, {
     type: "bar",
     data: {
       labels,
       datasets: [
         {
-          label: "Net P&L (₹)",
+          type: "bar",
+          label: "Daily P&L",
           data,
           backgroundColor: backgroundColors,
           borderColor: borderColors,
           borderWidth: 1,
+          yAxisID: "y",
+          order: 2,
+        },
+        {
+          type: "line",
+          label: "Cumulative P&L",
+          data: cumulativeData,
+          borderColor: "rgba(111, 255, 181, 1)",
+          backgroundColor: "rgba(111, 255, 181, 0.1)",
+          borderWidth: 3,
+          pointRadius: 4,
+          pointHoverRadius: 6,
+          pointBackgroundColor: "rgba(111, 255, 181, 1)",
+          pointBorderColor: "#0b0d17",
+          pointBorderWidth: 2,
+          tension: 0.3,
+          fill: true,
+          yAxisID: "y",
+          order: 1,
         },
       ],
     },
     options: {
-      responsive: false,
+      responsive: true,
       maintainAspectRatio: false,
+      interaction: {
+        mode: "index",
+        intersect: false,
+      },
       scales: {
         y: {
+          type: "linear",
+          display: true,
+          position: "left",
+          grid: {
+            color: "rgba(80, 92, 134, 0.2)",
+          },
           ticks: {
+            color: "rgba(197, 205, 224, 0.85)",
+            font: {
+              size: 11,
+            },
             callback: (value) =>
-              Number(value).toLocaleString("en-IN", {
+              "₹" + Number(value).toLocaleString("en-IN", {
                 maximumFractionDigits: 0,
               }),
           },
         },
+        x: {
+          grid: {
+            color: "rgba(80, 92, 134, 0.1)",
+          },
+          ticks: {
+            color: "rgba(197, 205, 224, 0.85)",
+            font: {
+              size: 11,
+            },
+            maxRotation: 45,
+            minRotation: 0,
+          },
+        },
       },
       plugins: {
-        legend: { display: false },
-        tooltip: { enabled: false },
+        legend: {
+          display: true,
+          position: "top",
+          align: "end",
+          labels: {
+            color: "rgba(197, 205, 224, 0.95)",
+            font: {
+              size: 12,
+              weight: "600",
+            },
+            padding: 15,
+            usePointStyle: true,
+            pointStyle: "circle",
+          },
+        },
+        tooltip: {
+          backgroundColor: "rgba(18, 21, 34, 0.95)",
+          titleColor: "#f5f7ff",
+          bodyColor: "#c5cde0",
+          borderColor: "rgba(80, 92, 134, 0.5)",
+          borderWidth: 1,
+          padding: 12,
+          displayColors: true,
+          callbacks: {
+            label: (context) => {
+              const label = context.dataset.label || "";
+              const value = Number(context.parsed.y).toLocaleString("en-IN", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              });
+              return `${label}: ₹${value}`;
+            },
+          },
+        },
       },
     },
   });
 
-  const pngDataUrl = offscreenCanvas.toDataURL("image/png");
-  dailyChartImage.src = pngDataUrl;
-  dailyChartImage.classList.remove("hidden");
   if (dailyChartPlaceholder) {
     dailyChartPlaceholder.textContent = "";
   }
@@ -418,14 +549,17 @@ function renderDailyStatsTable(stats) {
   const rows = stats
     .map((item) => {
       const net = Number(item.net_pnl) || 0;
-      const rowClass = net >= 0 ? "positive" : "negative";
+      const rowClass = net > 0 ? "positive" : net < 0 ? "negative" : "";
+      const netDisplay = formatMoney(net) || "0.00";
+      const winsClass = Number(item.wins) > 0 ? "positive" : "";
+      const lossesClass = Number(item.losses) > 0 ? "negative" : "";
       return `
         <tr class="${rowClass}">
           <td>${item.date_label || item.date}</td>
-          <td>${formatMoney(net)}</td>
+          <td class="${rowClass}">₹${netDisplay}</td>
           <td>${item.trades}</td>
-          <td>${item.wins}</td>
-          <td>${item.losses}</td>
+          <td class="${winsClass}">${item.wins}</td>
+          <td class="${lossesClass}">${item.losses}</td>
         </tr>
       `;
     })
@@ -484,7 +618,15 @@ async function loadInventory() {
 async function handleFetchSubmit(event) {
   event.preventDefault();
   const payload = toPayload(fetchForm);
-  setStatus(fetchResultBox, "Submitting...", false);
+  const submitBtn = fetchForm.querySelector('button[type="submit"]');
+  const btnText = submitBtn.querySelector('.btn-text');
+  const btnSpinner = submitBtn.querySelector('.btn-spinner');
+
+  // Show loading state
+  submitBtn.disabled = true;
+  btnText.textContent = "Fetching...";
+  btnSpinner.classList.remove("hidden");
+  setStatus(fetchResultBox, "Submitting request to OpenAlgo...", false);
 
   try {
     const response = await fetch("/fetch", {
@@ -507,13 +649,26 @@ async function handleFetchSubmit(event) {
     await loadInventory();
   } catch (error) {
     setStatus(fetchResultBox, `❌ ${error.message}`, true);
+  } finally {
+    // Reset loading state
+    submitBtn.disabled = false;
+    btnText.textContent = "Fetch & Upsert";
+    btnSpinner.classList.add("hidden");
   }
 }
 
 async function handleBacktestSubmit(event) {
   event.preventDefault();
   const payload = toPayload(backtestForm);
-  setStatus(backtestMessage, "Running backtest...", false);
+  const submitBtn = backtestForm.querySelector('button[type="submit"]');
+  const btnText = submitBtn.querySelector('.btn-text');
+  const btnSpinner = submitBtn.querySelector('.btn-spinner');
+
+  // Show loading state
+  submitBtn.disabled = true;
+  btnText.textContent = "Running...";
+  btnSpinner.classList.remove("hidden");
+  setStatus(backtestMessage, "Running backtest from TimescaleDB...", false);
   backtestSummaryBox.innerHTML = "";
   clearTradesPanels();
   resetDailyVisuals();
@@ -531,7 +686,7 @@ async function handleBacktestSubmit(event) {
     }
 
     const data = await response.json();
-    setStatus(backtestMessage, "Backtest completed successfully.", false);
+    setStatus(backtestMessage, "✅ Backtest completed successfully!", false);
 
     if (data.output_csv) {
       backtestMessage.innerHTML += `<br><span class="status-success">📁 Saved CSV: ${data.output_csv}</span>`;
@@ -563,6 +718,11 @@ async function handleBacktestSubmit(event) {
     setActiveTab("recent");
   } catch (error) {
     setStatus(backtestMessage, `❌ ${error.message}`, true);
+  } finally {
+    // Reset loading state
+    submitBtn.disabled = false;
+    btnText.textContent = "Run Backtest";
+    btnSpinner.classList.add("hidden");
   }
 }
 
@@ -604,3 +764,22 @@ if (tradesTabs.length > 0) {
 }
 
 loadInventory();
+
+// Collapsible sections functionality
+document.querySelectorAll(".collapsible-trigger").forEach((trigger) => {
+  trigger.addEventListener("click", () => {
+    const section = trigger.closest(".collapsible");
+    const content = section.querySelector(".collapsible-content");
+    const icon = trigger.querySelector(".collapse-icon");
+
+    if (content.style.maxHeight) {
+      content.style.maxHeight = null;
+      section.classList.remove("expanded");
+      icon.textContent = "▼";
+    } else {
+      content.style.maxHeight = content.scrollHeight + "px";
+      section.classList.add("expanded");
+      icon.textContent = "▲";
+    }
+  });
+});
