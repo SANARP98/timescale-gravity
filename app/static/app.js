@@ -15,6 +15,8 @@ const dailyStatsTable = document.getElementById("daily-stats-table");
 const toastContainer = document.getElementById("toast-container");
 const copyTradesBtn = document.getElementById("copy-trades-btn");
 const backtestOutputCard = document.getElementById("backtest-output-card");
+const strategySelector = document.getElementById("strategy-selector");
+const strategyParamsContainer = document.getElementById("strategy-params-container");
 const dataViewerModal = document.getElementById("data-viewer-modal");
 const modalTitle = document.getElementById("modal-title");
 const modalBody = document.getElementById("modal-body");
@@ -27,6 +29,7 @@ const modalCloseBtn = document.getElementById("modal-close-btn");
 let dailyChart = null;
 let currentInventorySort = "asc";
 let modalChart = null;
+let availableStrategies = [];
 
 function setButtonLoading(button, isLoading, loadingText = "Loading...") {
   if (!button) return;
@@ -85,22 +88,56 @@ function showToast(message, type = "info", duration = 5000) {
 }
 
 function toPayload(form) {
-  const payload = {};
+  const basePayload = {};
   const formData = new FormData(form);
   for (const [name, value] of formData.entries()) {
     const field = form.elements.namedItem(name);
-    if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement)) {
-      if (value !== "") {
-        payload[name] = value;
-      }
-      continue;
-    }
+    // Skip strategy params, they are handled separately
+    if (field && field.closest('#strategy-params-container')) continue;
+
     if (field instanceof HTMLInputElement && field.type === "checkbox") {
-      payload[name] = true;
+      basePayload[name] = field.checked;
     } else if (value !== "") {
-      payload[name] = value;
+      basePayload[name] = value;
     }
   }
+
+  // Collect strategy-specific parameters
+  const strategyParams = {};
+  const strategyParamsGroup = document.getElementById('strategy-params-form');
+  if (strategyParamsGroup) {
+    const fields = strategyParamsGroup.querySelectorAll("[name]");
+    fields.forEach((field) => {
+      if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement)) {
+        return;
+      }
+      const name = field.name;
+      if (!name) return;
+
+      if (field instanceof HTMLInputElement && field.type === "checkbox") {
+        strategyParams[name] = field.checked;
+        return;
+      }
+
+      const rawValue = field.value;
+      if (rawValue === "") {
+        return;
+      }
+
+      const fieldType = field.dataset.type;
+      if (fieldType === "integer") {
+        strategyParams[name] = parseInt(rawValue, 10);
+      } else if (fieldType === "number") {
+        strategyParams[name] = parseFloat(rawValue);
+      } else if (fieldType === "boolean") {
+        strategyParams[name] = rawValue === "true";
+      } else {
+        strategyParams[name] = rawValue;
+      }
+    });
+  }
+
+  const payload = { ...basePayload };
 
   Array.from(form.elements)
     .filter(
@@ -113,7 +150,7 @@ function toPayload(form) {
       payload[checkbox.name] = checkbox.checked;
     });
 
-  return payload;
+  return { ...payload, strategy_params: strategyParams };
 }
 
 function setStatus(element, message, isError = false) {
@@ -817,7 +854,11 @@ async function handleFetchSubmit(event) {
 
 async function handleBacktestSubmit(event) {
   event.preventDefault();
-  const payload = toPayload(backtestForm);
+  let payload = toPayload(backtestForm);
+  if (!payload.strategy_name) {
+    showToast("❌ Please select a strategy.", "error");
+    return;
+  }
   const submitBtn = backtestForm.querySelector('button[type="submit"]');
   setButtonLoading(submitBtn, true, "Running...");
   setStatus(backtestMessage, "Running backtest from TimescaleDB...", false);  
@@ -1126,6 +1167,103 @@ if (inventoryBox) {
   });
 }
 
+function generateFieldHtml(name, schema) {
+  const title = schema.title || name.replace(/_/g, ' ');
+  const type = schema.type;
+  const defaultValue = schema.default;
+
+  if (schema.enum) {
+    const options = schema.enum.map(val =>
+      `<option value="${val}" ${val === defaultValue ? 'selected' : ''}>${val}</option>`
+    ).join('');
+    return `
+      <label>
+        ${title}
+        <select name="${name}" data-type="string">${options}</select>
+      </label>
+    `;
+  }
+
+  if (type === 'boolean') {
+    return `
+      <label class="inline">
+        <input type="checkbox" name="${name}" data-type="boolean" ${defaultValue ? 'checked' : ''}>
+        ${title}
+      </label>
+    `;
+  }
+
+  if (type === 'integer' || type === 'number') {
+    const step = type === 'integer' ? '1' : '0.1';
+    return `
+      <label>
+        ${title}
+        <input name="${name}" type="number" value="${defaultValue}" step="${step}" data-type="${type}">
+      </label>
+    `;
+  }
+
+  // Default to text input
+  return `
+    <label>
+      ${title}
+      <input name="${name}" type="text" value="${defaultValue || ''}" data-type="string">
+    </label>
+  `;
+}
+
+function renderStrategyParams(strategyName) {
+  if (!strategyParamsContainer) return;
+
+  const strategy = availableStrategies.find(s => s.name === strategyName);
+  if (!strategy || !strategy.parameters || !strategy.parameters.properties) {
+    strategyParamsContainer.innerHTML = '';
+    return;
+  }
+
+  const { properties, required } = strategy.parameters;
+  const fieldsHtml = Object.entries(properties).map(([name, schema]) => {
+    const fieldHtml = generateFieldHtml(name, schema);
+    if (required && required.includes(name)) {
+      // Add required attribute to the input/select
+      return fieldHtml.replace(/<(input|select)/, `$& required`);
+    }
+    return fieldHtml;
+  }).join('');
+
+  strategyParamsContainer.innerHTML = `
+    <div class="form-section-title">Strategy Parameters</div>
+    <div id="strategy-params-form" class="form-section-fields" role="group" aria-label="Strategy Parameters">
+      ${fieldsHtml}
+    </div>
+  `;
+}
+
+async function loadStrategies() {
+  if (!strategySelector) return;
+  try {
+    const response = await fetch('/strategies');
+    if (!response.ok) throw new Error('Failed to load strategies.');
+    availableStrategies = await response.json();
+
+    if (availableStrategies.length > 0) {
+      strategySelector.innerHTML = '<option value="" disabled selected>Select a strategy</option>';
+      availableStrategies.forEach(strategy => {
+        const option = new Option(strategy.title, strategy.name);
+        strategySelector.add(option);
+      });
+      // Pre-select the first strategy and render its params
+      strategySelector.value = availableStrategies[0].name;
+      renderStrategyParams(availableStrategies[0].name);
+    } else {
+      strategySelector.innerHTML = '<option value="" disabled selected>No strategies found</option>';
+    }
+  } catch (error) {
+    strategySelector.innerHTML = '<option value="" disabled selected>Error loading strategies</option>';
+    showToast(`❌ ${error.message}`, 'error');
+  }
+}
+
 if (tradesTabs.length > 0) {
   tradesTabs.forEach((button) => {
     button.addEventListener("click", () => {
@@ -1135,6 +1273,11 @@ if (tradesTabs.length > 0) {
   setActiveTab("recent");
 }
 
+if (strategySelector) {
+  strategySelector.addEventListener('change', (e) => renderStrategyParams(e.target.value));
+}
+
+loadStrategies();
 loadInventory(currentInventorySort);
 setupCollapsibles();
 setupModal();

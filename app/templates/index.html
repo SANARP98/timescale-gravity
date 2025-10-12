@@ -75,6 +75,12 @@
             <label>Start Date<input name="start_date" type="date" value="2025-09-01" required></label>
             <label>End Date<input name="end_date" type="date" value="2025-10-06" required></label>
             <label>
+              Strategy
+              <select name="strategy_name" id="strategy-selector" required>
+                <option value="" disabled selected>Loading strategies...</option>
+              </select>
+            </label>
+            <label>
               Option Selection
               <select name="option_selection">
                 <option value="both" selected>Both (PE + CE)</option>
@@ -84,38 +90,10 @@
             </label>
             <label>Starting Capital<input name="starting_capital" type="number" value="100000" step="1000"></label>
             <label>Qty per Point<input name="qty_per_point" type="number" value="150"></label>
-            <label>Target (pts)<input name="target_points" type="number" value="10" step="0.1"></label>
-            <label>Stoploss (pts)<input name="stoploss_points" type="number" value="2" step="0.1"></label>
-            <label>EMA Fast<input name="ema_fast" type="number" value="5"></label>
-            <label>EMA Slow<input name="ema_slow" type="number" value="20"></label>
-            <label>ATR Window<input name="atr_window" type="number" value="14"></label>
-            <label>ATR Min (pts)<input name="atr_min_points" type="number" value="2" step="0.1"></label>
-            <label>Daily Loss Cap (₹)<input name="daily_loss_cap" type="number" value="-1000" step="100"></label>
-            <label>
-              Exit Bar Path
-              <select name="exit_bar_path">
-                <option value="color" selected>color</option>
-                <option value="bull">bull</option>
-                <option value="bear">bear</option>
-                <option value="worst">worst</option>
-              </select>
-            </label>
-            <label>
-              Trade Direction
-              <select name="trade_direction">
-                <option value="both" selected>both</option>
-                <option value="long_only">long_only</option>
-                <option value="short_only">short_only</option>
-              </select>
-            </label>
-            <label class="inline">
-              <input type="checkbox" name="confirm_trend_at_entry" checked>
-              Confirm Trend at Entry
-            </label>
-            <label class="inline">
-              <input type="checkbox" name="enable_eod_square_off" checked>
-              Enable EOD Square-off
-            </label>
+
+            <!-- Dynamic strategy parameters will be injected here -->
+            <div id="strategy-params-container" class="form-section"></div>
+
             <label class="inline">
               <input type="checkbox" name="write_csv">
               Save Trades CSV
