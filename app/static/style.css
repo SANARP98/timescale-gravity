@@ -791,3 +791,80 @@ table tbody tr:hover {
     grid-template-columns: 1fr;
   }
 }
+
+/* Modal Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(4, 8, 24, 0.8);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.modal-overlay:not(.hidden) {
+  opacity: 1;
+}
+
+.modal-content {
+  background: #121522;
+  border: 1px solid rgba(80, 92, 134, 0.4);
+  border-radius: 18px;
+  width: 90%;
+  max-width: 900px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 60px rgba(4, 8, 24, 0.5);
+  transform: scale(0.95);
+  transition: transform 0.25s ease;
+}
+
+.modal-overlay:not(.hidden) .modal-content {
+  transform: scale(1);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid rgba(80, 92, 134, 0.3);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 2rem;
+  color: rgba(197, 205, 224, 0.7);
+  cursor: pointer;
+  padding: 0 0.5rem;
+  line-height: 1;
+}
+
+.modal-body {
+  padding: 0 0.5rem 1rem;
+}
+
+/* Sticky header for modal table */
+.modal-body table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.modal-body table th {
+  background-color: #121522; /* Match modal background to hide scrolling content */
+}

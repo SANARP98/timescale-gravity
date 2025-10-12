@@ -163,4 +163,17 @@
     <p>API endpoints remain available at <code>/fetch</code> and <code>/backtest</code>. Use this UI for quick interactive runs.</p>
   </footer>
 </body>
+
+<!-- Data Viewer Modal -->
+<div id="data-viewer-modal" class="modal-overlay hidden">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 id="modal-title">Data Viewer</h3>
+      <button id="modal-close-btn" class="modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div id="modal-body" class="modal-body scrollable">
+      <!-- Data table will be rendered here -->
+    </div>
+  </div>
+</div>
 </html>

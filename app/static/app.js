@@ -14,6 +14,11 @@ const dailyChartPlaceholder = document.getElementById("daily-chart-empty");
 const dailyStatsTable = document.getElementById("daily-stats-table");
 const toastContainer = document.getElementById("toast-container");
 const copyTradesBtn = document.getElementById("copy-trades-btn");
+const dataViewerModal = document.getElementById("data-viewer-modal");
+const modalTitle = document.getElementById("modal-title");
+const modalBody = document.getElementById("modal-body");
+const modalCloseBtn = document.getElementById("modal-close-btn");
+
 
 let dailyChart = null;
 let currentInventorySort = "asc";
@@ -383,7 +388,10 @@ function renderInventoryTable(items, sortOrder = "asc") {
       <tr>
         <td>${item.symbol}</td>
         <td>${item.exchange}</td>
-        <td>${item.interval}</td>
+        <td class="view-data-trigger" 
+            data-symbol="${item.symbol}" data-exchange="${item.exchange}" data-interval="${item.interval}"
+            title="Click to view raw data"
+        >${item.interval}</td>
         <td>${Number(item.rows_count).toLocaleString()}</td>
         <td>${formatTimestamp(item.start_ts)}</td>
         <td>${formatTimestamp(item.end_ts)}</td>
@@ -424,7 +432,9 @@ function renderInventoryTable(items, sortOrder = "asc") {
             <span class="header-content">Symbol ${sortIcon}</span>
           </th>
           <th>Exchange</th>
-          <th>Interval</th>
+          <th title="Click interval to view raw data">
+            <span class="header-content">Interval ⓘ</span>
+          </th>
           <th>Bars</th>
           <th>First Bar (IST)</th>
           <th>Last Bar (IST)</th>
@@ -911,6 +921,72 @@ if (inventoryRefresh) {
   });
 }
 
+function setupModal() {
+  if (!dataViewerModal || !modalCloseBtn) return;
+
+  const closeModal = () => {
+    dataViewerModal.classList.add("hidden");
+    if (modalBody) modalBody.innerHTML = ""; // Clear content on close
+  };
+
+  modalCloseBtn.addEventListener("click", closeModal);
+  dataViewerModal.addEventListener("click", (event) => {
+    if (event.target === dataViewerModal) {
+      closeModal();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !dataViewerModal.classList.contains("hidden")) {
+      closeModal();
+    }
+  });
+}
+
+function renderModalTable(data) {
+  if (!data || data.length === 0) {
+    return "<p>No data to display.</p>";
+  }
+  const headers = Object.keys(data[0]);
+  const thead = headers.map(h => `<th>${h}</th>`).join("");
+  const rows = data.map(row => {
+    const cells = headers.map(h => {
+      let value = row[h];
+      if (value === null || value === undefined) {
+        value = "–";
+      } else if (h === 'ts') {
+        value = formatTimestamp(value);
+      } else if (typeof value === 'number') {
+        value = value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+      return `<td>${value}</td>`;
+    }).join("");
+    return `<tr>${cells}</tr>`;
+  }).join("");
+
+  return `<table><thead><tr>${thead}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function showDataViewer(symbol, exchange, interval) {
+  if (!dataViewerModal || !modalTitle || !modalBody) return;
+
+  modalTitle.textContent = `Data for: ${symbol} ${exchange} ${interval}`;
+  modalBody.innerHTML = `<p class="muted" style="text-align: center; padding: 2rem;">Loading data...</p>`;
+  dataViewerModal.classList.remove("hidden");
+
+  try {
+    const response = await fetch(`/data/${encodeURIComponent(symbol)}/${encodeURIComponent(exchange)}/${encodeURIComponent(interval)}`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ detail: "Failed to load data." }));
+      throw new Error(err.detail);
+    }
+    const data = await response.json();
+    modalBody.innerHTML = renderModalTable(data);
+  } catch (error) {
+    modalBody.innerHTML = `<p class="status-error" style="text-align: center; padding: 2rem;">Error: ${error.message}</p>`;
+    showToast(`❌ Could not load data: ${error.message}`, "error");
+  }
+}
+
 if (inventoryBox) {
   inventoryBox.addEventListener("click", (event) => {
     // Check if clicked on sortable header
@@ -920,6 +996,14 @@ if (inventoryBox) {
       const newSort = currentSort === "asc" ? "desc" : "asc";
       currentInventorySort = newSort;
       loadInventory(newSort);
+      return;
+    }
+
+    // Check if clicked on view data trigger
+    const viewTrigger = event.target.closest(".view-data-trigger");
+    if (viewTrigger) {
+      const { symbol, exchange, interval } = viewTrigger.dataset;
+      showDataViewer(symbol, exchange, interval);
       return;
     }
 
@@ -957,3 +1041,4 @@ if (tradesTabs.length > 0) {
 
 loadInventory(currentInventorySort);
 setupCollapsibles();
+setupModal();

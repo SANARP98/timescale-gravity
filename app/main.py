@@ -15,6 +15,7 @@ from tsdb_pipeline import (
     fetch_history_to_tsdb,
     list_available_series,
     delete_series,
+    read_ohlcv_from_tsdb,
     get_series_coverage,
 )
 
@@ -206,6 +207,33 @@ def delete_inventory(symbol: str, exchange: str, interval: str):
         rows_deleted = delete_series(symbol, exchange, interval)
         return {"rows_deleted": rows_deleted, "message": f"Deleted {rows_deleted} rows for {symbol} {exchange} {interval}"}
     except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/data/{symbol}/{exchange}/{interval}", response_model=List[Dict[str, Any]])
+def get_data_for_series(symbol: str, exchange: str, interval: str):
+    """
+    Get raw OHLCV data for a specific series.
+    """
+    try:
+        df = read_ohlcv_from_tsdb(symbol, exchange, interval)
+        if df.empty:
+            raise HTTPException(status_code=404, detail="No data found for the specified series.")
+
+        # Convert DataFrame to list of dicts for JSON response
+        df.reset_index(inplace=True)  # make 'ts' a column
+        df["ts"] = df["ts"].apply(lambda x: x.isoformat())  # format timestamp
+
+        # Round numeric columns for cleaner display
+        for col in ["open", "high", "low", "close", "volume", "oi"]:
+            if col in df.columns:
+                # Handle potential None values in 'oi'
+                df[col] = df[col].apply(lambda x: round(x, 2) if pd.notna(x) else None)
+
+        return df.to_dict(orient="records")
+
+    except Exception as exc:
+        # Ensure exceptions are propagated correctly
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
