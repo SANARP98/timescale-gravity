@@ -859,8 +859,8 @@ def multi_history_delete_batch(batch_id: str) -> Dict[str, Any]:
     if not ids_to_delete:
         raise HTTPException(status_code=404, detail=f"Batch '{batch_id}' not found")
 
-    # Delete from database
-    delete_sql = "DELETE FROM tester_results WHERE id = ANY(%s)"
+    # Delete from database (cast text array to uuid array)
+    delete_sql = "DELETE FROM tester_results WHERE id = ANY(%s::uuid[])"
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(delete_sql, (ids_to_delete,))
         deleted_count = cur.rowcount
