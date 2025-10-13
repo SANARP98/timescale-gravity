@@ -135,15 +135,25 @@ def compute_indicators(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     out["atr"] = openalgo.ta.atr(out[["high", "low", "close"]].values, cfg.atr_window)
     return out
 
+# Import intelligent DB-aware history fetching
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from db_aware_history import get_history_smart
+
 def get_history(client, cfg: Config) -> pd.DataFrame:
+    """Fetch history intelligently (checks TimescaleDB cache first)."""
     today = now_ist().date()
     start_date = cfg.history_start_date or (today - timedelta(days=cfg.warmup_days)).strftime("%Y-%m-%d")
     end_date = cfg.history_end_date or today.strftime("%Y-%m-%d")
-    df = client.history(symbol=cfg.symbol, exchange=cfg.exchange, interval=cfg.interval,
-                        start_date=start_date, end_date=end_date)
-    df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize("Asia/Kolkata") \
-        if not pd.api.types.is_datetime64tz_dtype(df["timestamp"]) else df["timestamp"].dt.tz_convert("Asia/Kolkata")
-    return df[["timestamp","open","high","low","close","volume"]].sort_values("timestamp").reset_index(drop=True)
+
+    df = get_history_smart(client, cfg.symbol, cfg.exchange, cfg.interval, start_date, end_date)
+    if df.empty:
+        return pd.DataFrame(columns=["timestamp","open","high","low","close","volume","oi"])
+
+    cols = ["timestamp","open","high","low","close","volume"]
+    if "oi" in df.columns:
+        cols.append("oi")
+    return df[cols]
 
 # ----------------------------
 # Trading Engine

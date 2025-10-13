@@ -603,7 +603,13 @@ def compute_indicators(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     out["atr"] = openalgo.ta.atr(out["high"].values, out["low"].values, out["close"].values, cfg.atr_window)
     return out
 
+# Import intelligent DB-aware history fetching
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from db_aware_history import get_history_smart
+
 def get_history(client, cfg: Config, symbol: Optional[str] = None) -> pd.DataFrame:
+    """Fetch history intelligently (checks TimescaleDB cache first)."""
     today = now_ist().date()
     yesterday = today - timedelta(days=1)
     start_date = cfg.history_start_date or (today - timedelta(days=cfg.warmup_days)).strftime("%Y-%m-%d")
@@ -612,55 +618,33 @@ def get_history(client, cfg: Config, symbol: Optional[str] = None) -> pd.DataFra
 
     # Normalize interval for OpenAlgo API (D for daily, not 1d)
     normalized_interval = normalize_interval(cfg.interval)
-    log(f"[{STRATEGY_NAME}] [HISTORY] Fetching {sym}@{cfg.exchange} interval={normalized_interval} from {start_date} to {end_date}")
+    log(f"[{STRATEGY_NAME}] [HISTORY] Requesting {sym}@{cfg.exchange} interval={normalized_interval} from {start_date} to {end_date}")
+    log(f"[{STRATEGY_NAME}] [HISTORY] Using DB-aware smart fetching...")
 
     try:
-        df = client.history(symbol=sym, exchange=cfg.exchange, interval=normalized_interval,
-                            start_date=start_date, end_date=end_date)
+        df = get_history_smart(
+            client=client,
+            symbol=sym,
+            exchange=cfg.exchange,
+            interval=normalized_interval,
+            start_date=start_date,
+            end_date=end_date
+        )
     except Exception as e:
-        log(f"[{STRATEGY_NAME}] [ERROR] history() API call failed: {e}")
+        log(f"[{STRATEGY_NAME}] [ERROR] Smart history fetch failed: {e}")
         raise
 
-    # Debug: log the raw response
-    log(f"[{STRATEGY_NAME}] [HISTORY] Response type: {type(df)}")
-
-    # Check if API returned an error dict instead of DataFrame
-    if isinstance(df, dict):
-        log(f"[{STRATEGY_NAME}] [ERROR] API returned error response: {df}")
-        error_msg = df.get('message', df.get('error', 'Unknown error'))
-        raise ValueError(f"history() API error: {error_msg}")
-
-    if not isinstance(df, pd.DataFrame):
-        log(f"[{STRATEGY_NAME}] [ERROR] history() returned {type(df)} instead of DataFrame: {df}")
-        raise ValueError(f"history() must return a DataFrame, got {type(df)}")
-
-    log(f"[{STRATEGY_NAME}] [HISTORY] Received DataFrame with columns: {list(df.columns)}")
-    log(f"[{STRATEGY_NAME}] [HISTORY] DataFrame shape: {df.shape}")
-
     if df.empty:
-        log(f"[{STRATEGY_NAME}] [ERROR] history() returned empty DataFrame")
-        raise ValueError("history() returned empty DataFrame - no historical data available")
+        log(f"[{STRATEGY_NAME}] [ERROR] No historical data retrieved")
+        raise ValueError("No historical data available")
 
-    # Check if timestamp is in index instead of columns
-    if "timestamp" not in df.columns:
-        if df.index.name == "timestamp" or isinstance(df.index, pd.DatetimeIndex):
-            log(f"[{STRATEGY_NAME}] [HISTORY] Timestamp found in index, resetting to column")
-            df = df.reset_index()
-        else:
-            log(f"[{STRATEGY_NAME}] [ERROR] Missing 'timestamp' column. Available columns: {list(df.columns)}")
-            log(f"[{STRATEGY_NAME}] [DEBUG] Index name: {df.index.name}")
-            log(f"[{STRATEGY_NAME}] [DEBUG] First few rows:\n{df.head()}")
-            raise ValueError(f"history() must return a DataFrame with 'timestamp' column. Got columns: {list(df.columns)}")
+    log(f"[{STRATEGY_NAME}] [HISTORY] ✅ Successfully retrieved {len(df)} bars")
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    # Handle timezone: localize if naive, convert if already timezone-aware
-    if df["timestamp"].dt.tz is None:
-        df["timestamp"] = df["timestamp"].dt.tz_localize("Asia/Kolkata")
-    else:
-        df["timestamp"] = df["timestamp"].dt.tz_convert("Asia/Kolkata")
-
-    log(f"[{STRATEGY_NAME}] [HISTORY] ✅ Successfully fetched {len(df)} bars")
-    return df[["timestamp","open","high","low","close","volume"]].sort_values("timestamp").reset_index(drop=True)
+    # Return required columns (oi is optional)
+    cols = ["timestamp","open","high","low","close","volume"]
+    if "oi" in df.columns:
+        cols.append("oi")
+    return df[cols]
 
 def get_cache_filename(cfg: Config, symbol: str) -> str:
     """Get the cache filename for a given symbol"""

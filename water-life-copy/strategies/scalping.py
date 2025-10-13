@@ -178,8 +178,16 @@ def last_complete_bar(df: pd.DataFrame) -> int:
     return len(df) - 1
 
 
+# Import intelligent DB-aware history fetching
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from db_aware_history import get_history_smart
+
 def get_history(client, cfg: Config) -> pd.DataFrame:
-    """Fetch recent history (uses explicit start_date/end_date controls as required)."""
+    """
+    Fetch recent history intelligently (checks TimescaleDB cache first).
+    Only fetches missing data from OpenAlgo API.
+    """
     today = now_ist().date()
     if cfg.history_start_date:
         start_date = cfg.history_start_date
@@ -188,30 +196,33 @@ def get_history(client, cfg: Config) -> pd.DataFrame:
 
     end_date = cfg.history_end_date or today.strftime("%Y-%m-%d")
 
-    # OpenAlgo history expected to return pandas-like data (per docs output is DataFrame)
-    df = client.history(
+    print(f"[SCALPING] Using DB-aware smart fetching for {cfg.symbol}...")
+
+    # Use intelligent fetching (DB cache + API backfill)
+    df = get_history_smart(
+        client=client,
         symbol=cfg.symbol,
         exchange=cfg.exchange,
         interval=cfg.interval,
         start_date=start_date,
-        end_date=end_date,
+        end_date=end_date
     )
 
-    # Standardize columns/ensure timestamp tz-aware IST
-    if "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_convert("Asia/Kolkata") \
-            if pd.api.types.is_datetime64tz_dtype(df["timestamp"]) else pd.to_datetime(df["timestamp"]).dt.tz_localize("Asia/Kolkata")
-        df = df.sort_values("timestamp").reset_index(drop=True)
-    else:
-        raise ValueError("history() must return a DataFrame with 'timestamp' column")
+    if df.empty:
+        print(f"[SCALPING] No data retrieved")
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "oi"])
 
-    # Ensure required columns in correct order
-    cols = ["timestamp", "open", "high", "low", "close", "volume"]
-    missing = [c for c in cols if c not in df.columns]
+    # Ensure required columns (oi is optional)
+    required_cols = ["timestamp", "open", "high", "low", "close", "volume"]
+    missing = [c for c in required_cols if c not in df.columns]
     if missing:
         raise ValueError(f"history() missing required columns: {missing}")
 
-    return df[cols]
+    # Return with or without oi column as it exists
+    if "oi" in df.columns:
+        return df[["timestamp", "open", "high", "low", "close", "volume", "oi"]]
+    else:
+        return df[["timestamp", "open", "high", "low", "close", "volume"]]
 
 
 # ----------------------------

@@ -5,10 +5,18 @@ from dotenv import load_dotenv
 import os
 import argparse
 
+# Import intelligent DB-aware fetching
+from db_aware_history import fetch_history_smart
+
 # 🔁 OpenAlgo Python Bot is running.
 
 def fetch_history(symbol, exchange, interval, start_date, end_date, output_csv=None):
-    """Fetch historical data from OpenAlgo API"""
+    """
+    Fetch historical data intelligently (checks DB first, then API if needed).
+
+    This now uses TimescaleDB caching for faster repeated fetches.
+    Only fetches missing data from OpenAlgo API.
+    """
     # Load environment variables
     load_dotenv()
     API_KEY = os.getenv("API_KEY")
@@ -20,23 +28,21 @@ def fetch_history(symbol, exchange, interval, start_date, end_date, output_csv=N
     if output_csv is None:
         output_csv = f"{symbol}_history.csv"
 
-    # Fetch Historical Data
-    df = client.history(
+    # Use smart DB-aware fetching
+    print(f"📊 Fetching {symbol} {exchange} {interval} | {start_date} → {end_date}")
+    print(f"🔍 Checking TimescaleDB cache first...")
+
+    output_file = fetch_history_smart(
+        client=client,
         symbol=symbol,
         exchange=exchange,
         interval=interval,
         start_date=start_date,
-        end_date=end_date
+        end_date=end_date,
+        output_csv=output_csv
     )
 
-    # Convert index to datetime if not already
-    if not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.to_datetime(df.index)
-
-    # Save to CSV
-    df.to_csv(output_csv)
-    print(f"✅ Historical data saved to {output_csv}")
-    return output_csv
+    return output_file
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Fetch historical data from OpenAlgo')

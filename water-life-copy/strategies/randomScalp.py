@@ -289,30 +289,44 @@ def validate_symbol(client, symbol: str, exchange: str) -> bool:
         log(f"[{STRATEGY_NAME}] [VALIDATION] Exception: {e}")
         return True
 
-# Optional history (disabled by default)
+# Import intelligent DB-aware history fetching
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from db_aware_history import get_history_smart
+
+# Optional history (now DB-aware - checks cache first)
 def get_history(client, cfg: Config, symbol: Optional[str] = None) -> pd.DataFrame:
+    """
+    Fetch historical data intelligently (checks TimescaleDB cache first).
+    Only fetches missing data from OpenAlgo API.
+    """
     sym = symbol or cfg.symbol
     start_date = cfg.history_start_date or (now_ist().date() - timedelta(days=2)).strftime('%Y-%m-%d')
     end_date = cfg.history_end_date or (now_ist().date() - timedelta(days=1)).strftime('%Y-%m-%d')
     interval = cfg.interval.upper()
     if interval in {"1D", "D", "DAY", "DAILY"}:
         interval = "D"
-    log(f"[{STRATEGY_NAME}] [HISTORY] Fetching {sym}@{cfg.exchange} {interval} {start_date}→{end_date}")
-    df = client.history(symbol=sym, exchange=cfg.exchange, interval=interval,
-                        start_date=start_date, end_date=end_date)
-    if isinstance(df, pd.DataFrame):
-        if 'timestamp' not in df.columns:
-            df = df.reset_index()
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        if df['timestamp'].dt.tz is None:
-            df['timestamp'] = df['timestamp'].dt.tz_localize('Asia/Kolkata')
-        else:
-            df['timestamp'] = df['timestamp'].dt.tz_convert('Asia/Kolkata')
-        log(f"[{STRATEGY_NAME}] [HISTORY] Bars: {len(df)}")
-        return df.sort_values('timestamp').reset_index(drop=True)
-    else:
-        log(f"[{STRATEGY_NAME}] [HISTORY] Non-DataFrame response: {df}")
-        return pd.DataFrame(columns=["timestamp","open","high","low","close","volume"])    
+
+    log(f"[{STRATEGY_NAME}] [HISTORY] Requesting {sym}@{cfg.exchange} {interval} {start_date}→{end_date}")
+    log(f"[{STRATEGY_NAME}] [HISTORY] Using DB-aware smart fetching...")
+
+    # Use intelligent fetching (DB cache + API backfill)
+    df = get_history_smart(
+        client=client,
+        symbol=sym,
+        exchange=cfg.exchange,
+        interval=interval,
+        start_date=start_date,
+        end_date=end_date
+    )
+
+    if df.empty:
+        log(f"[{STRATEGY_NAME}] [HISTORY] No data retrieved")
+        return pd.DataFrame(columns=["timestamp","open","high","low","close","volume","oi"])
+
+    # Data is already in correct format from get_history_smart
+    log(f"[{STRATEGY_NAME}] [HISTORY] Retrieved {len(df)} bars")
+    return df    
 
 # ----------------------------
 # Trading Engine
