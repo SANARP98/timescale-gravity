@@ -13,9 +13,23 @@ const dailyChartCanvas = document.getElementById("daily-chart");
 const dailyChartPlaceholder = document.getElementById("daily-chart-empty");
 const dailyStatsTable = document.getElementById("daily-stats-table");
 const toastContainer = document.getElementById("toast-container");
+const copyTradesBtn = document.getElementById("copy-trades-btn");
+const backtestOutputCard = document.getElementById("backtest-output-card");
+const strategySelector = document.getElementById("strategy-selector");
+const strategyParamsContainer = document.getElementById("strategy-params-container");
+const dataViewerModal = document.getElementById("data-viewer-modal");
+const modalTitle = document.getElementById("modal-title");
+const modalBody = document.getElementById("modal-body");
+const modalTableContainer = document.getElementById("modal-table-container");
+const modalChartContainer = document.getElementById("modal-chart-container");
+const modalCandlestickCanvas = document.getElementById("modal-candlestick-chart");
+const modalCloseBtn = document.getElementById("modal-close-btn");
+
 
 let dailyChart = null;
 let currentInventorySort = "asc";
+let modalChart = null;
+let availableStrategies = [];
 
 function setButtonLoading(button, isLoading, loadingText = "Loading...") {
   if (!button) return;
@@ -74,22 +88,56 @@ function showToast(message, type = "info", duration = 5000) {
 }
 
 function toPayload(form) {
-  const payload = {};
+  const basePayload = {};
   const formData = new FormData(form);
   for (const [name, value] of formData.entries()) {
     const field = form.elements.namedItem(name);
-    if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement)) {
-      if (value !== "") {
-        payload[name] = value;
-      }
-      continue;
-    }
+    // Skip strategy params, they are handled separately
+    if (field && field.closest('#strategy-params-container')) continue;
+
     if (field instanceof HTMLInputElement && field.type === "checkbox") {
-      payload[name] = true;
+      basePayload[name] = field.checked;
     } else if (value !== "") {
-      payload[name] = value;
+      basePayload[name] = value;
     }
   }
+
+  // Collect strategy-specific parameters
+  const strategyParams = {};
+  const strategyParamsGroup = document.getElementById('strategy-params-form');
+  if (strategyParamsGroup) {
+    const fields = strategyParamsGroup.querySelectorAll("[name]");
+    fields.forEach((field) => {
+      if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement)) {
+        return;
+      }
+      const name = field.name;
+      if (!name) return;
+
+      if (field instanceof HTMLInputElement && field.type === "checkbox") {
+        strategyParams[name] = field.checked;
+        return;
+      }
+
+      const rawValue = field.value;
+      if (rawValue === "") {
+        return;
+      }
+
+      const fieldType = field.dataset.type;
+      if (fieldType === "integer") {
+        strategyParams[name] = parseInt(rawValue, 10);
+      } else if (fieldType === "number") {
+        strategyParams[name] = parseFloat(rawValue);
+      } else if (fieldType === "boolean") {
+        strategyParams[name] = rawValue === "true";
+      } else {
+        strategyParams[name] = rawValue;
+      }
+    });
+  }
+
+  const payload = { ...basePayload };
 
   Array.from(form.elements)
     .filter(
@@ -102,7 +150,7 @@ function toPayload(form) {
       payload[checkbox.name] = checkbox.checked;
     });
 
-  return payload;
+  return { ...payload, strategy_params: strategyParams };
 }
 
 function setStatus(element, message, isError = false) {
@@ -387,28 +435,41 @@ function renderInventoryTable(items, sortOrder = "asc") {
         <td>${formatTimestamp(item.start_ts)}</td>
         <td>${formatTimestamp(item.end_ts)}</td>
         <td>
-          <button
-            type="button"
-            class="table-action"
-            data-action="use"
-            data-symbol="${item.symbol}"
-            data-exchange="${item.exchange}"
-            data-interval="${item.interval}"
-            data-start-ts="${item.start_ts ?? ""}"
-            data-end-ts="${item.end_ts ?? ""}"
-          >
-            Use in forms
-          </button>
-          <button
-            type="button"
-            class="table-action-delete"
-            data-action="delete"
-            data-symbol="${item.symbol}"
-            data-exchange="${item.exchange}"
-            data-interval="${item.interval}"
-          >
-            Delete
-          </button>
+          <div class="table-actions-group">
+            <button
+              type="button"
+              class="table-action"
+              data-action="use"
+              data-symbol="${item.symbol}"
+              data-exchange="${item.exchange}"
+              data-interval="${item.interval}"
+              data-start-ts="${item.start_ts ?? ""}"
+              data-end-ts="${item.end_ts ?? ""}"
+            >
+              Use in forms
+            </button>
+            <button
+              type="button"
+              class="table-action-icon"
+              title="View Data"
+              data-action="view"
+              data-symbol="${item.symbol}"
+              data-exchange="${item.exchange}"
+              data-interval="${item.interval}"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            </button>
+            <button
+              type="button"
+              class="table-action-delete"
+              data-action="delete"
+              data-symbol="${item.symbol}"
+              data-exchange="${item.exchange}"
+              data-interval="${item.interval}"
+            >
+              Delete
+            </button>
+          </div>
         </td>
       </tr>`
     )
@@ -436,6 +497,15 @@ function renderInventoryTable(items, sortOrder = "asc") {
 function clearTradesPanels() {
   if (tradesRecentPanel) tradesRecentPanel.innerHTML = "";
   if (tradesAllPanel) tradesAllPanel.innerHTML = "";
+}
+
+function clearBacktestOutput() {
+  if (backtestSummaryBox) backtestSummaryBox.innerHTML = "";
+  clearTradesPanels();
+  resetDailyVisuals();
+  if (copyTradesBtn) copyTradesBtn.classList.add("hidden");
+  document.body.classList.remove("roi-positive", "roi-negative");
+  document.body.style.removeProperty("--roi-intensity");
 }
 
 function resetDailyVisuals() {
@@ -784,13 +854,15 @@ async function handleFetchSubmit(event) {
 
 async function handleBacktestSubmit(event) {
   event.preventDefault();
-  const payload = toPayload(backtestForm);
+  let payload = toPayload(backtestForm);
+  if (!payload.strategy_name) {
+    showToast("❌ Please select a strategy.", "error");
+    return;
+  }
   const submitBtn = backtestForm.querySelector('button[type="submit"]');
   setButtonLoading(submitBtn, true, "Running...");
-  setStatus(backtestMessage, "Running backtest from TimescaleDB...", false);
-  backtestSummaryBox.innerHTML = "";
-  clearTradesPanels();
-  resetDailyVisuals();
+  setStatus(backtestMessage, "Running backtest from TimescaleDB...", false);  
+  clearBacktestOutput();
 
   try {
     const response = await fetch("/backtest", {
@@ -828,6 +900,21 @@ async function handleBacktestSubmit(event) {
         ${renderMetrics(data.summary)}
         ${renderExitReasons(data.summary.exit_reason_counts)}
       `;
+
+      // Add the background glow based on ROI
+      if (data.summary.roi_percent) {
+        const roi = Number(data.summary.roi_percent);
+        // Calculate intensity, capping at 1. A 50% ROI gives max intensity.
+        const intensity = Math.min(Math.abs(roi) / 50, 1);
+
+        document.body.style.setProperty("--roi-intensity", intensity);
+
+        if (roi > 0) {
+          document.body.classList.add("roi-positive");
+        } else if (roi < 0) {
+          document.body.classList.add("roi-negative");
+        }
+      }
     }
 
     const recentTrades = data.trades_tail || [];
@@ -847,11 +934,37 @@ async function handleBacktestSubmit(event) {
     renderDailyChart(data.daily_stats || []);
     renderDailyStatsTable(data.daily_stats || []);
     setActiveTab("recent");
+
+    if (copyTradesBtn && allTrades.length > 0) {
+      copyTradesBtn.classList.remove("hidden");
+      copyTradesBtn.onclick = () => copyTradesToClipboard(allTrades);
+    }
   } catch (error) {
     setStatus(backtestMessage, `❌ ${error.message}`, true);
     showToast(`❌ ${error.message}`, "error");
   } finally {
     setButtonLoading(submitBtn, false);
+  }
+}
+
+function copyTradesToClipboard(trades) {
+  if (!trades || trades.length === 0) {
+    showToast("No trades to copy.", "info");
+    return;
+  }
+  try {
+    const headers = Object.keys(trades[0]);
+    const headerRow = headers.join("\t");
+    const rows = trades.map(trade => 
+      headers.map(header => String(trade[header] ?? "")).join("\t")
+    );
+    const tsvContent = [headerRow, ...rows].join("\n");
+
+    navigator.clipboard.writeText(tsvContent);
+    showToast(`✅ Copied ${trades.length} trades to clipboard.`, "success");
+  } catch (error) {
+    console.error("Failed to copy trades:", error);
+    showToast("❌ Failed to copy trades to clipboard.", "error");
   }
 }
 
@@ -875,6 +988,146 @@ if (inventoryRefresh) {
       setButtonLoading(inventoryRefresh, false);
     }
   });
+}
+
+function setupModal() {
+  if (!dataViewerModal || !modalCloseBtn) return;
+
+  const closeModal = () => {
+    dataViewerModal.classList.add("hidden");
+    if (modalTableContainer) modalTableContainer.innerHTML = ""; // Clear content on close
+    if (modalChart) {
+      modalChart.destroy();
+      modalChart = null;
+    }
+  };
+
+  modalCloseBtn.addEventListener("click", closeModal);
+  dataViewerModal.addEventListener("click", (event) => {
+    if (event.target === dataViewerModal) {
+      closeModal();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !dataViewerModal.classList.contains("hidden")) {
+      closeModal();
+    }
+  });
+}
+
+function renderModalTable(data) {
+  if (!data || data.length === 0) {
+    return "<p>No data to display.</p>";
+  }
+  const headers = Object.keys(data[0]);
+  const thead = headers.map(h => `<th>${h}</th>`).join("");
+  const rows = data.map(row => {
+    const cells = headers.map(h => {
+      let value = row[h];
+      if (value === null || value === undefined) {
+        value = "–";
+      } else if (h === 'ts') {
+        value = formatTimestamp(value);
+      } else if (typeof value === 'number') {
+        value = value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+      return `<td>${value}</td>`;
+    }).join("");
+    return `<tr>${cells}</tr>`;
+  }).join("");
+
+  return `<table><thead><tr>${thead}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderModalCandlestickChart(data) {
+  if (modalChart) {
+    modalChart.destroy();
+    modalChart = null;
+  }
+  if (!modalCandlestickCanvas || !data || data.length === 0) return;
+
+  const chartData = data.map(d => ({
+    x: new Date(d.ts).valueOf(),
+    o: d.open,
+    h: d.high,
+    l: d.low,
+    c: d.close,
+  }));
+
+  modalChart = new Chart(modalCandlestickCanvas, {
+    type: 'candlestick',
+    data: {
+      datasets: [{
+        label: 'OHLC',
+        data: chartData,
+        color: {
+          up: '#6fffb5',
+          down: '#ff8b8b',
+          unchanged: '#c5cde0',
+        },
+        borderColor: {
+          up: '#6fffb5',
+          down: '#ff8b8b',
+          unchanged: '#c5cde0',
+        }
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          type: 'time',
+          time: {
+            unit: 'minute',
+            tooltipFormat: 'MMM dd, yyyy HH:mm',
+            displayFormats: {
+              minute: 'HH:mm',
+              hour: 'MMM dd HH:mm',
+            }
+          },
+          grid: { color: "rgba(80, 92, 134, 0.1)" },
+          ticks: { color: "rgba(197, 205, 224, 0.85)", font: { size: 11 } },
+        },
+        y: {
+          grid: { color: "rgba(80, 92, 134, 0.2)" },
+          ticks: { color: "rgba(197, 205, 224, 0.85)", font: { size: 11 } },
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: "rgba(18, 21, 34, 0.95)",
+          titleColor: "#f5f7ff",
+          bodyColor: "#c5cde0",
+          borderColor: "rgba(80, 92, 134, 0.5)",
+          borderWidth: 1,
+        }
+      }
+    }
+  });
+}
+
+async function showDataViewer(symbol, exchange, interval) {
+  if (!dataViewerModal || !modalTitle || !modalTableContainer) return;
+
+  modalTitle.textContent = `Data for: ${symbol} ${exchange} ${interval}`;
+  modalTableContainer.innerHTML = `<p class="muted" style="text-align: center; padding: 2rem;">Loading data...</p>`;
+  dataViewerModal.classList.remove("hidden");
+
+  try {
+    const response = await fetch(`/data/${encodeURIComponent(symbol)}/${encodeURIComponent(exchange)}/${encodeURIComponent(interval)}`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ detail: "Failed to load data."}));
+      throw new Error(err.detail);
+    }
+    const data = await response.json();
+    modalTableContainer.innerHTML = renderModalTable(data);
+    renderModalCandlestickChart(data);
+  } catch (error) {
+    modalTableContainer.innerHTML = `<p class="status-error" style="text-align: center; padding: 2rem;">Error: ${error.message}</p>`;
+    showToast(`❌ Could not load data: ${error.message}`, "error");
+  }
 }
 
 if (inventoryBox) {
@@ -908,8 +1161,107 @@ if (inventoryBox) {
         startTs: button.dataset.startTs || "",
         endTs: button.dataset.endTs || "",
       });
+    } else if (action === "view") {
+      showDataViewer(symbol, exchange, interval);
     }
   });
+}
+
+function generateFieldHtml(name, schema) {
+  const title = schema.title || name.replace(/_/g, ' ');
+  const type = schema.type;
+  const defaultValue = schema.default;
+
+  if (schema.enum) {
+    const options = schema.enum.map(val =>
+      `<option value="${val}" ${val === defaultValue ? 'selected' : ''}>${val}</option>`
+    ).join('');
+    return `
+      <label>
+        ${title}
+        <select name="${name}" data-type="string">${options}</select>
+      </label>
+    `;
+  }
+
+  if (type === 'boolean') {
+    return `
+      <label class="inline">
+        <input type="checkbox" name="${name}" data-type="boolean" ${defaultValue ? 'checked' : ''}>
+        ${title}
+      </label>
+    `;
+  }
+
+  if (type === 'integer' || type === 'number') {
+    const step = type === 'integer' ? '1' : '0.1';
+    return `
+      <label>
+        ${title}
+        <input name="${name}" type="number" value="${defaultValue}" step="${step}" data-type="${type}">
+      </label>
+    `;
+  }
+
+  // Default to text input
+  return `
+    <label>
+      ${title}
+      <input name="${name}" type="text" value="${defaultValue || ''}" data-type="string">
+    </label>
+  `;
+}
+
+function renderStrategyParams(strategyName) {
+  if (!strategyParamsContainer) return;
+
+  const strategy = availableStrategies.find(s => s.name === strategyName);
+  if (!strategy || !strategy.parameters || !strategy.parameters.properties) {
+    strategyParamsContainer.innerHTML = '';
+    return;
+  }
+
+  const { properties, required } = strategy.parameters;
+  const fieldsHtml = Object.entries(properties).map(([name, schema]) => {
+    const fieldHtml = generateFieldHtml(name, schema);
+    if (required && required.includes(name)) {
+      // Add required attribute to the input/select
+      return fieldHtml.replace(/<(input|select)/, `$& required`);
+    }
+    return fieldHtml;
+  }).join('');
+
+  strategyParamsContainer.innerHTML = `
+    <div class="form-section-title">Strategy Parameters</div>
+    <div id="strategy-params-form" class="form-section-fields" role="group" aria-label="Strategy Parameters">
+      ${fieldsHtml}
+    </div>
+  `;
+}
+
+async function loadStrategies() {
+  if (!strategySelector) return;
+  try {
+    const response = await fetch('/strategies');
+    if (!response.ok) throw new Error('Failed to load strategies.');
+    availableStrategies = await response.json();
+
+    if (availableStrategies.length > 0) {
+      strategySelector.innerHTML = '<option value="" disabled selected>Select a strategy</option>';
+      availableStrategies.forEach(strategy => {
+        const option = new Option(strategy.title, strategy.name);
+        strategySelector.add(option);
+      });
+      // Pre-select the first strategy and render its params
+      strategySelector.value = availableStrategies[0].name;
+      renderStrategyParams(availableStrategies[0].name);
+    } else {
+      strategySelector.innerHTML = '<option value="" disabled selected>No strategies found</option>';
+    }
+  } catch (error) {
+    strategySelector.innerHTML = '<option value="" disabled selected>Error loading strategies</option>';
+    showToast(`❌ ${error.message}`, 'error');
+  }
 }
 
 if (tradesTabs.length > 0) {
@@ -921,5 +1273,11 @@ if (tradesTabs.length > 0) {
   setActiveTab("recent");
 }
 
+if (strategySelector) {
+  strategySelector.addEventListener('change', (e) => renderStrategyParams(e.target.value));
+}
+
+loadStrategies();
 loadInventory(currentInventorySort);
 setupCollapsibles();
+setupModal();

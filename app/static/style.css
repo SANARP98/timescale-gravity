@@ -45,6 +45,7 @@ a {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+  transition: background 0.8s ease-out;
 }
 
 .site-header p {
@@ -97,12 +98,51 @@ a {
   border-radius: 18px;
   padding: 2rem;
   box-shadow: 0 18px 40px rgba(4, 8, 24, 0.35);
+  position: relative; /* Needed for the pseudo-element glow */
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .card:hover {
   transform: translateY(-2px);
   box-shadow: 0 22px 50px rgba(4, 8, 24, 0.45);
+}
+
+/* ROI Glow Effect */
+body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.8s ease-out;
+  z-index: -1;
+}
+
+body.roi-positive::before {
+  background: radial-gradient(circle at top center, rgba(111, 255, 181, 0.2) 0%, rgba(111, 255, 181, 0) 70%);
+  opacity: var(--roi-intensity, 0);
+}
+
+body.roi-negative::before {
+  background: radial-gradient(circle at top center, rgba(255, 139, 139, 0.18) 0%, rgba(255, 139, 139, 0) 70%);
+  opacity: var(--roi-intensity, 0);
+}
+
+body.roi-positive .site-header h1 {
+  background: linear-gradient(135deg, #cfffe9, #6fffb5);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+body.roi-negative .site-header h1 {
+  background: linear-gradient(135deg, #ffe1e1, #ff8b8b);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .card h2 {
@@ -308,6 +348,31 @@ button.table-action-delete:hover {
   transform: translateY(-1px);
 }
 
+.table-action-icon {
+  background: rgba(80, 92, 134, 0.2);
+  border: 1px solid rgba(80, 92, 134, 0.5);
+  color: #c5cde0;
+  padding: 0.45rem;
+  font-size: 0.8rem;
+  box-shadow: none;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.table-action-icon:hover {
+  background: rgba(88, 181, 255, 0.2);
+  border-color: rgba(88, 181, 255, 0.5);
+}
+.table-actions-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: flex-start;
+}
+
 .tab-buttons {
   display: flex;
   gap: 0.75rem;
@@ -357,6 +422,15 @@ button.table-action-delete:hover {
   color: rgba(197, 205, 224, 0.7);
 }
 
+.result-box[data-empty]:empty {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 8px,
+    rgba(80, 92, 134, 0.05) 8px,
+    rgba(80, 92, 134, 0.05) 16px
+  );
+}
 
 .chart-box canvas {
   width: 100%;
@@ -774,4 +848,96 @@ table tbody tr:hover {
   .form-section-fields {
     grid-template-columns: 1fr;
   }
+}
+
+/* Modal Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(4, 8, 24, 0.8);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.modal-overlay:not(.hidden) {
+  opacity: 1;
+}
+
+.modal-content {
+  background: #121522;
+  border: 1px solid rgba(80, 92, 134, 0.4);
+  border-radius: 18px;
+  width: 95%;
+  max-width: 1600px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 60px rgba(4, 8, 24, 0.5);
+  transform: scale(0.95);
+  transition: transform 0.25s ease;
+}
+
+.modal-overlay:not(.hidden) .modal-content {
+  transform: scale(1);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid rgba(80, 92, 134, 0.3);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 2rem;
+  color: rgba(197, 205, 224, 0.7);
+  cursor: pointer;
+  padding: 0 0.5rem;
+  line-height: 1;
+}
+
+.modal-body-split {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  padding: 0 0.5rem 1rem;
+}
+
+.modal-panel {
+  padding: 0 1rem;
+}
+
+#modal-table-container {
+  flex: 0 0 40%;
+}
+
+#modal-chart-container {
+  flex: 1 1 60%;
+}
+
+/* Sticky header for modal table */
+.modal-body table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.modal-body table th {
+  background-color: #121522; /* Match modal background to hide scrolling content */
 }

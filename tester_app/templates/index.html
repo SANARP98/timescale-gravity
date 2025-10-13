@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tester App</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <main class="container">
+      <header>
+        <h1>Strategy Permutation Tester</h1>
+        <p>
+          Test multiple trading strategies with various parameter combinations.
+          Select a strategy, configure parameters, and press <strong>Start</strong> to begin testing.
+        </p>
+      </header>
+
+      <section class="strategy-selector">
+        <h2>Select Strategy</h2>
+        <select id="strategy-select" class="strategy-dropdown">
+          <option value="">Loading strategies...</option>
+        </select>
+        <div id="strategy-description" class="strategy-description"></div>
+      </section>
+
+      <section class="config-panel">
+        <h2>Configuration <button id="toggle-config-btn" class="toggle-btn">Show</button></h2>
+        <div id="config-form" class="config-form hidden">
+          <div class="config-grid">
+            <div class="config-group">
+              <label>Batch Name</label>
+              <input type="text" id="test-name" placeholder="Optional label (e.g. Morning Sweep)" />
+            </div>
+
+            <div class="config-group">
+              <label>Symbols (comma or newline separated)</label>
+              <textarea id="symbols" rows="2">NIFTY28OCT2525200CE,NIFTY28OCT2525200PE</textarea>
+            </div>
+
+            <div class="config-group">
+              <label>Start Date</label>
+              <input type="date" id="start-date" value="2025-09-01" />
+            </div>
+
+            <div class="config-group">
+              <label>End Date</label>
+              <input type="date" id="end-date" value="2025-10-06" />
+            </div>
+
+            <div class="config-group">
+              <label>Starting Capital (₹)</label>
+              <input type="number" id="starting-capital" value="100000" step="1000" />
+            </div>
+
+            <div class="config-group">
+              <label>Max Workers</label>
+              <input type="number" id="max-workers" value="2" min="1" max="8" />
+            </div>
+
+            <div class="config-group">
+              <label>Qty Per Point</label>
+              <input type="number" id="qty-per-point" value="150" step="1" />
+            </div>
+          </div>
+
+          <h3>Parameter Ranges</h3>
+          <div class="param-helper">
+            <div id="param-fields" class="config-grid"></div>
+            <div class="param-preview">
+              <label for="param-json-preview">Parameter Ranges JSON</label>
+              <textarea id="param-json-preview" readonly rows="10" placeholder="Adjust parameter inputs to generate JSON"></textarea>
+              <div class="param-buttons">
+                <button type="button" id="param-copy-btn" class="secondary">Copy JSON</button>
+                <button type="button" id="param-reset-btn" class="secondary">Reset Parameters</button>
+              </div>
+              <p class="param-hint">Values accept comma lists or ranges like <code>2-10:2</code>. Leave blank to use strategy defaults.</p>
+            </div>
+          </div>
+
+          <div class="config-actions">
+            <button id="apply-config-btn" class="primary">Apply Configuration</button>
+            <button id="reset-config-btn" class="secondary">Reset to Defaults</button>
+            <div id="config-info" class="config-info"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="controls">
+        <button id="start-btn" class="primary">Start / Resume</button>
+        <button id="pause-btn" class="secondary">Pause</button>
+        <button id="reset-btn" class="secondary">Reset Queue</button>
+        <button id="clear-btn" class="danger">Clear Results</button>
+      </section>
+
+      <section class="export-panel">
+        <h2>Export Results</h2>
+        <button id="export-all-btn" class="secondary">Download All (CSV)</button>
+        <p class="export-help">Downloads all stored runs directly to your browser.</p>
+      </section>
+
+      <section class="status-card">
+        <h2>Status</h2>
+        <div id="status-message">Awaiting command…</div>
+        <dl id="status-stats" class="stats-grid"></dl>
+      </section>
+
+      <section class="result-card">
+        <h2>Last Result</h2>
+        <div id="last-result" class="result-grid" data-empty="No runs yet. Start the tester to generate data."></div>
+      </section>
+
+      <section class="db-card">
+        <h2>Database</h2>
+        <div id="db-stats" class="db-grid"></div>
+      </section>
+
+      <section class="history-card">
+        <h2>Previous Runs</h2>
+        <p id="history-status" class="history-status">Loading…</p>
+        <div class="history-actions">
+          <div class="history-filter">
+            <input type="text" id="history-filter" placeholder="Filter by batch name" />
+            <button id="history-filter-btn" class="secondary" type="button">Apply</button>
+            <button id="history-filter-clear-btn" class="secondary" type="button">Clear</button>
+          </div>
+          <button id="history-export-all-btn" class="secondary">Export All Runs</button>
+        </div>
+        <div class="history-table-wrapper">
+          <table id="history-table" class="history-table">
+            <thead>
+              <tr>
+                <th class="sortable" data-sort="created_at">Created <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="strategy">Strategy <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="symbol">Symbol <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="test_name">Batch <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="target">Target / Stop <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="ema">EMA (fast/slow) <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="atr">ATR Min <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="dlc">Daily Loss Cap <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="trades">Trades <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="winrate">Winrate % <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="net">Net ₹ <span class="sort-indicator"></span></th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

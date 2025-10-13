@@ -1,0 +1,708 @@
+from __future__ import annotations
+
+import csv
+import itertools
+import io
+import logging
+import threading
+import time
+import os
+import concurrent.futures
+from copy import deepcopy
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+from psycopg2.extras import Json
+
+import main as core_api
+from tsdb_pipeline import get_conn
+
+logger = logging.getLogger("tester_app")
+logger.setLevel(logging.INFO)
+
+BASE_DIR = Path(__file__).resolve().parent
+
+app = FastAPI(title="Strategy Tester App", version="0.1.0")
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+
+# ------------ Database Helpers ------------
+
+CREATE_RESULTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tester_results (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    strategy TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    exchange TEXT NOT NULL,
+    interval TEXT NOT NULL,
+    params JSONB NOT NULL,
+    summary JSONB NOT NULL
+);
+"""
+
+
+def ensure_results_table() -> None:
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(CREATE_RESULTS_TABLE_SQL)
+        conn.commit()
+
+
+def insert_result(
+    strategy: str,
+    symbol: str,
+    exchange: str,
+    interval: str,
+    params: Dict[str, Any],
+    summary: Dict[str, Any],
+) -> None:
+    ensure_results_table()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO tester_results (strategy, symbol, exchange, interval, params, summary)
+            VALUES (%(strategy)s, %(symbol)s, %(exchange)s, %(interval)s, %(params)s, %(summary)s);
+            """,
+            {
+                "strategy": strategy,
+                "symbol": symbol,
+                "exchange": exchange,
+                "interval": interval,
+                "params": Json(params),
+                "summary": Json(summary),
+            },
+        )
+        conn.commit()
+    logger.info("Stored tester result for %s %s params=%s", strategy, symbol, params)
+
+
+def db_stats() -> Dict[str, Any]:
+    ensure_results_table()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(pg_column_size(summary)), 0) FROM tester_results;")
+        count_row = cur.fetchone() or (0, 0)
+
+        cur.execute(
+            "SELECT pg_database_size(current_database()), pg_size_pretty(pg_database_size(current_database()));"
+        )
+        db_row = cur.fetchone() or (0, "0 bytes")
+
+        cur.execute("SELECT pg_total_relation_size('tester_results');")
+        table_bytes = cur.fetchone()
+
+    return {
+        "results_rows": int(count_row[0]),
+        "results_payload_bytes": int(count_row[1]),
+        "database_bytes": int(db_row[0]),
+        "database_pretty": str(db_row[1]),
+        "results_table_bytes": int(table_bytes[0]) if table_bytes and table_bytes[0] is not None else 0,
+    }
+
+
+# ------------ Strategy Execution ------------
+
+def clear_results_table() -> None:
+    ensure_results_table()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("TRUNCATE TABLE tester_results;")
+        conn.commit()
+    logger.info("Cleared tester_results table")
+
+
+SUMMARY_FIELDS = {
+    "trades": "total_trades",
+    "wins": "wins",
+    "losses": "losses",
+    "winrate_percent": "winrate_percent",
+    "net_rupees": "net_rupees",
+    "gross_rupees": "gross_rupees",
+    "costs_rupees": "costs_rupees",
+    "roi_percent": "roi_percent",
+    "risk_reward": "risk_reward",
+}
+
+
+def ensure_strategies_loaded() -> None:
+    if not core_api.STRATEGIES:
+        core_api.load_strategies()
+
+
+def option_selection_for_symbol(symbol: str) -> str:
+    symbol = symbol.upper()
+    if symbol.endswith("CE"):
+        return "ce"
+    if symbol.endswith("PE"):
+        return "pe"
+    return "both"
+
+
+def execute_backtest(strategy_name: str, base_config: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
+    ensure_strategies_loaded()
+    if strategy_name not in core_api.STRATEGIES:
+        raise RuntimeError(f"Strategy '{strategy_name}' is not available.")
+
+    config = deepcopy(base_config)
+    config.update(params)
+
+    runner = core_api.STRATEGIES[strategy_name]["run"]
+    result = runner(config, write_csv=False)
+    summary = result.get("summary")
+
+    # Handle cases where no trades were generated
+    if not summary:
+        # Create a zero-result summary instead of raising an error
+        logger.warning("No trades generated for %s with params: %s", strategy_name, params)
+        subset = {
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "winrate_percent": 0.0,
+            "net_rupees": 0.0,
+            "gross_rupees": 0.0,
+            "costs_rupees": 0.0,
+            "roi_percent": 0.0,
+            "risk_reward": 0.0,
+            "last_run_at": datetime.now(timezone.utc).isoformat(),
+            "no_trades_reason": result.get("message", "No trades generated"),
+        }
+        return subset
+
+    subset = {}
+    for target_key, source_key in SUMMARY_FIELDS.items():
+        if source_key in summary:
+            subset[target_key] = summary[source_key]
+
+    subset["last_run_at"] = datetime.now(timezone.utc).isoformat()
+    return subset
+
+
+# ------------ Permutation Runner ------------
+
+StrategyParams = Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Job:
+    symbol: str
+    params: StrategyParams
+
+    def describe(self) -> Dict[str, Any]:
+        return {"symbol": self.symbol, **self.params}
+
+    def __hash__(self) -> int:
+        items = tuple(sorted(self.params.items()))
+        return hash((self.symbol, items))
+
+
+@dataclass
+class ConfigRanges:
+    symbols: List[str]
+    target_points: List[float]
+    stoploss_points: List[float]
+    ema_fast_values: List[int]
+    ema_slow_values: List[int]
+    atr_min_values: List[float]
+    daily_loss_caps: List[float]
+
+
+def generate_jobs(config: Optional[ConfigRanges] = None) -> List[Job]:
+    if config is None:
+        # Default configuration
+        symbols = ["NIFTY28OCT2525200CE", "NIFTY28OCT2525200PE"]
+        target_points = list(range(2, 11))
+        stoploss_points = list(range(2, 11))
+        ema_fast_values = [3, 5]
+        ema_slow_values = [10, 20]
+        atr_min_values = [1, 2, 3]
+        daily_loss_caps = [-1000, -1500, -2000, -2500, -3000]
+    else:
+        symbols = config.symbols
+        target_points = config.target_points
+        stoploss_points = config.stoploss_points
+        ema_fast_values = config.ema_fast_values
+        ema_slow_values = config.ema_slow_values
+        atr_min_values = config.atr_min_values
+        daily_loss_caps = config.daily_loss_caps
+
+    jobs: List[Job] = []
+    for symbol, tgt, sl, ema_fast, ema_slow, atr_min, dlc in itertools.product(
+        symbols, target_points, stoploss_points, ema_fast_values, ema_slow_values, atr_min_values, daily_loss_caps
+    ):
+        option_selection = option_selection_for_symbol(symbol)
+        job_params: StrategyParams = {
+            "symbol": symbol,
+            "option_selection": option_selection,
+            "target_points": float(tgt),
+            "stoploss_points": float(sl),
+            "ema_fast": int(ema_fast),
+            "ema_slow": int(ema_slow),
+            "atr_min_points": float(atr_min),
+            "daily_loss_cap": float(dlc),
+            "trade_direction": "long_only",
+            "confirm_trend_at_entry": True,
+            "enable_eod_square_off": True,
+        }
+        jobs.append(Job(symbol=symbol, params=job_params))
+    return jobs
+
+
+class PermutationRunner:
+    def __init__(self, strategy_name: str, base_config: Dict[str, Any], max_workers: int = 2, config_ranges: Optional[ConfigRanges] = None):
+        self.strategy_name = strategy_name
+        self.base_config = base_config
+        self.config_ranges = config_ranges
+        self._all_jobs: List[Job] = generate_jobs(config_ranges)
+        self.total_jobs = len(self._all_jobs)
+        self._index = 0
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._pause_event = threading.Event()
+        self._pause_event.clear()
+        self._stop_requested = False
+        self.running = False
+        self._current_jobs: set[Job] = set()
+        self.last_result: Optional[Dict[str, Any]] = None
+        self.last_error: Optional[str] = None
+        self._completed_count = 0
+        self.max_workers = max(1, max_workers)
+
+    def reconfigure(self, base_config: Optional[Dict[str, Any]] = None, max_workers: Optional[int] = None, config_ranges: Optional[ConfigRanges] = None) -> None:
+        """Reconfigure the runner with new parameters. Must be called when runner is stopped."""
+        with self._lock:
+            if self.running or (self._thread and self._thread.is_alive()):
+                raise RuntimeError("Cannot reconfigure while runner is active. Stop or reset first.")
+
+            if base_config is not None:
+                self.base_config = base_config
+            if max_workers is not None:
+                self.max_workers = max(1, max_workers)
+            if config_ranges is not None:
+                self.config_ranges = config_ranges
+                self._all_jobs = generate_jobs(config_ranges)
+                self.total_jobs = len(self._all_jobs)
+                self._index = 0
+                self._completed_count = 0
+
+    def reset(self) -> None:
+        with self._lock:
+            self._stop_requested = True
+            self._pause_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join()
+        with self._lock:
+            self._index = 0
+            self._completed_count = 0
+            self._current_jobs.clear()
+            self.last_result = None
+            self.last_error = None
+            self._stop_requested = False
+            self.running = False
+            self._thread = None
+            self._pause_event = threading.Event()
+        logger.info("Permutation runner reset")
+
+    def start(self) -> None:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                self._pause_event.set()
+                self.running = True
+                logger.info("Permutation runner resumed")
+                return
+
+            if self._index >= self.total_jobs:
+                self._index = 0
+                self._completed_count = 0
+            self._pause_event.set()
+            self._stop_requested = False
+            self._thread = threading.Thread(target=self._run_loop, daemon=True)
+            self._thread.start()
+            self.running = True
+            logger.info("Permutation runner started")
+
+    def pause(self) -> None:
+        self._pause_event.clear()
+        self.running = False
+        logger.info("Permutation runner paused")
+
+    def _next_job(self) -> Optional[Job]:
+        with self._lock:
+            if self._index >= self.total_jobs:
+                return None
+            job = self._all_jobs[self._index]
+            self._index += 1
+            return job
+
+    def _run_loop(self) -> None:
+        self.running = True
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            active: Dict[concurrent.futures.Future, Job] = {}
+            while not self._stop_requested:
+                self._pause_event.wait()
+                if self._stop_requested:
+                    break
+
+                while self._pause_event.is_set() and not self._stop_requested:
+                    while len(active) < self.max_workers:
+                        job = self._next_job()
+                        if job is None:
+                            break
+                        future = executor.submit(self._run_single_job, job)
+                        active[future] = job
+                        with self._lock:
+                            self._current_jobs.add(job)
+
+                    if not active:
+                        if self._index >= self.total_jobs:
+                            logger.info("Permutation runner completed all jobs")
+                            self.running = False
+                            self._pause_event.clear()
+                            return
+                        time.sleep(0.1)
+                        continue
+
+                    done, _ = concurrent.futures.wait(
+                        active.keys(),
+                        timeout=0.5,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    if not done:
+                        continue
+
+                    for fut in done:
+                        job = active.pop(fut)
+                        with self._lock:
+                            self._current_jobs.discard(job)
+                        try:
+                            result_payload = fut.result()
+                            self.last_result = result_payload
+                            self.last_error = None
+                        except Exception as exc:  # pragma: no cover - defensive
+                            self.last_error = str(exc)
+                            logger.exception("Job failed for %s: %s", job.symbol, exc)
+                        finally:
+                            with self._lock:
+                                self._completed_count += 1
+                                completed = self._completed_count
+                            logger.info(
+                                "Finished job %s/%s for %s",
+                                completed,
+                                self.total_jobs,
+                                job.symbol,
+                            )
+
+                    if self._index >= self.total_jobs and not active:
+                        logger.info("Permutation runner completed all jobs")
+                        self.running = False
+                        self._pause_event.clear()
+                        return
+
+                time.sleep(0.1)
+        self.running = False
+
+    def _run_single_job(self, job: Job) -> Dict[str, Any]:
+        summary = execute_backtest(self.strategy_name, self.base_config, job.params)
+        result_payload = {
+            "strategy": self.strategy_name,
+            "symbol": job.symbol,
+            "params": job.params,
+            "summary": summary,
+        }
+        insert_result(
+            strategy=self.strategy_name,
+            symbol=job.symbol,
+            exchange=self.base_config["exchange"],
+            interval=self.base_config["interval"],
+            params=job.params,
+            summary=summary,
+        )
+        return result_payload
+
+    @property
+    def completed_jobs(self) -> int:
+        with self._lock:
+            return min(self._completed_count, self.total_jobs)
+
+    def status(self) -> Dict[str, Any]:
+        remaining = max(self.total_jobs - self.completed_jobs, 0)
+        stats = db_stats()
+        with self._lock:
+            current_jobs = [job.describe() for job in self._current_jobs]
+            completed = self._completed_count
+            is_running = self.running and self._pause_event.is_set()
+        return {
+            "running": is_running,
+            "paused": not self._pause_event.is_set() and not self._stop_requested and self.completed_jobs > 0,
+            "current_jobs": current_jobs,
+            "active_workers": len(current_jobs),
+            "completed_jobs": completed,
+            "total_jobs": self.total_jobs,
+            "remaining_jobs": remaining,
+            "progress_percent": round((self.completed_jobs / self.total_jobs) * 100, 2) if self.total_jobs else 0.0,
+            "last_result": self.last_result,
+            "last_error": self.last_error,
+            "database": stats,
+            "max_workers": self.max_workers,
+        }
+
+
+BASE_BACKTEST_CONFIG = {
+    "exchange": "NFO",
+    "interval": "5m",
+    "start_date": "2025-09-01",
+    "end_date": "2025-10-06",
+    "starting_capital": 100_000.0,
+    "qty_per_point": 150.0,
+    "brokerage_per_trade": 0.0,
+    "slippage_points": 0.0,
+}
+
+MAX_WORKERS = int(os.getenv("TESTER_MAX_WORKERS", "2"))
+
+runner = PermutationRunner(
+    strategy_name="scalp_with_trend",
+    base_config=BASE_BACKTEST_CONFIG,
+    max_workers=MAX_WORKERS,
+)
+
+
+# ------------ API Routes ------------
+
+
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+class ControlResponse(BaseModel):
+    status: Dict[str, Any]
+
+
+class ConfigRequest(BaseModel):
+    symbols: List[str]
+    start_date: str
+    end_date: str
+    starting_capital: float
+    qty_per_point: float
+    max_workers: int
+    target_min: float
+    target_max: float
+    stoploss_min: float
+    stoploss_max: float
+    ema_fast: List[int]
+    ema_slow: List[int]
+    atr_min: List[float]
+    daily_loss_cap: List[float]
+
+
+@app.post("/start", response_model=ControlResponse)
+def start_runner():
+    runner.start()
+    return ControlResponse(status=runner.status())
+
+
+@app.post("/pause", response_model=ControlResponse)
+def pause_runner():
+    runner.pause()
+    return ControlResponse(status=runner.status())
+
+
+@app.post("/reset", response_model=ControlResponse)
+def reset_runner():
+    runner.reset()
+    return ControlResponse(status=runner.status())
+
+
+@app.post("/configure", response_model=ControlResponse)
+def configure_runner(config: ConfigRequest):
+    """Apply new configuration to the runner."""
+    try:
+        # Create range lists for target and stoploss
+        target_points = []
+        current = config.target_min
+        while current <= config.target_max:
+            target_points.append(current)
+            current += 0.5 if (current % 1 == 0 or current % 1 == 0.5) else 0.5
+
+        stoploss_points = []
+        current = config.stoploss_min
+        while current <= config.stoploss_max:
+            stoploss_points.append(current)
+            current += 0.5 if (current % 1 == 0 or current % 1 == 0.5) else 0.5
+
+        # Create ConfigRanges
+        config_ranges = ConfigRanges(
+            symbols=config.symbols,
+            target_points=target_points,
+            stoploss_points=stoploss_points,
+            ema_fast_values=config.ema_fast,
+            ema_slow_values=config.ema_slow,
+            atr_min_values=config.atr_min,
+            daily_loss_caps=config.daily_loss_cap,
+        )
+
+        # Update base config
+        new_base_config = {
+            "exchange": "NFO",
+            "interval": "5m",
+            "start_date": config.start_date,
+            "end_date": config.end_date,
+            "starting_capital": config.starting_capital,
+            "qty_per_point": config.qty_per_point,
+            "brokerage_per_trade": 0.0,
+            "slippage_points": 0.0,
+        }
+
+        # Reconfigure runner
+        runner.reconfigure(
+            base_config=new_base_config,
+            max_workers=config.max_workers,
+            config_ranges=config_ranges,
+        )
+
+        return ControlResponse(status=runner.status())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Configuration failed: {exc}") from exc
+
+
+@app.get("/status")
+def get_status():
+    return runner.status()
+
+
+@app.post("/clear-results", response_model=ControlResponse)
+def clear_results():
+    clear_results_table()
+    return ControlResponse(status=runner.status())
+
+
+class ExportRequest(BaseModel):
+    output_path: Optional[str] = None
+    format: str = "csv"
+    record_ids: Optional[List[str]] = None
+
+
+class ExportResponse(BaseModel):
+    exported_path: str
+    format: str
+    status: Dict[str, Any]
+
+
+@app.post("/export", response_model=ExportResponse)
+def export_results_api(payload: ExportRequest):
+    try:
+        from tester_app.export_results import export_results as do_export
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=500, detail=f"Export module unavailable: {exc}") from exc
+
+    fmt = payload.format.lower()
+    if fmt not in {"csv", "xlsx"}:
+        raise HTTPException(status_code=400, detail="format must be 'csv' or 'xlsx'")
+
+    if payload.output_path:
+        output_path = Path(payload.output_path)
+    else:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        suffix = "csv" if fmt == "csv" else "xlsx"
+        output_path = Path(f"/tmp/tester_results_{timestamp}.{suffix}")
+
+    try:
+        exported_path = do_export(fmt, output_path, ids=payload.record_ids)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return ExportResponse(
+        exported_path=str(exported_path),
+        format=fmt,
+        status=runner.status(),
+    )
+
+
+class HistoryItem(BaseModel):
+    id: str
+    created_at: datetime
+    strategy: str
+    symbol: str
+    exchange: str
+    interval: str
+    params: Dict[str, Any]
+    summary: Dict[str, Any]
+
+
+@app.get("/history", response_model=List[HistoryItem])
+def list_history():
+    try:
+        from tester_app.export_results import fetch_results
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=500, detail=f"History module unavailable: {exc}") from exc
+
+    rows = fetch_results()
+    history: List[HistoryItem] = []
+    for row in rows:
+        params = row.get("params") or {}
+        summary = row.get("summary") or {}
+        history.append(
+            HistoryItem(
+                id=str(row.get("id")),
+                created_at=row.get("created_at"),
+                strategy=row.get("strategy"),
+                symbol=row.get("symbol"),
+                exchange=row.get("exchange"),
+                interval=row.get("interval"),
+                params=params,
+                summary=summary,
+            )
+        )
+    return history
+
+
+@app.get("/history/export-file")
+def history_export_csv(ids: Optional[str] = None):
+    try:
+        from tester_app.export_results import fetch_results, flatten_row
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=500, detail=f"Export module unavailable: {exc}") from exc
+
+    id_list: Optional[List[str]] = None
+    if ids:
+        id_list = [candidate.strip() for candidate in ids.split(",") if candidate.strip()]
+
+    rows = fetch_results(ids=id_list)
+    if not rows:
+        raise HTTPException(status_code=404, detail="No tester results available for export.")
+
+    flattened: List[Dict[str, Any]] = [flatten_row(row) for row in rows]
+    if not flattened:
+        raise HTTPException(status_code=404, detail="No tester results available for export.")
+
+    field_order: List[str] = list(flattened[0].keys())
+    for entry in flattened[1:]:
+        for key in entry.keys():
+            if key not in field_order:
+                field_order.append(key)
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=field_order, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(flattened)
+    buffer.seek(0)
+
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    suffix = "subset" if id_list else "all"
+    filename = f"tester_results_{suffix}_{timestamp}.csv"
+    headers = {"Content-Disposition": f'attachment; filename=\"{filename}\"'}
+    return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv", headers=headers)
+
+
+# Ensure the results table exists when the app module loads
+ensure_results_table()
+ensure_strategies_loaded()

@@ -7,7 +7,9 @@
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
-  <script defer src="/static/app.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial/dist/chartjs-chart-financial.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
 </head>
 <body>
   <header class="site-header">
@@ -73,6 +75,12 @@
             <label>Start Date<input name="start_date" type="date" value="2025-09-01" required></label>
             <label>End Date<input name="end_date" type="date" value="2025-10-06" required></label>
             <label>
+              Strategy
+              <select name="strategy_name" id="strategy-selector" required>
+                <option value="" disabled selected>Loading strategies...</option>
+              </select>
+            </label>
+            <label>
               Option Selection
               <select name="option_selection">
                 <option value="both" selected>Both (PE + CE)</option>
@@ -82,38 +90,10 @@
             </label>
             <label>Starting Capital<input name="starting_capital" type="number" value="100000" step="1000"></label>
             <label>Qty per Point<input name="qty_per_point" type="number" value="150"></label>
-            <label>Target (pts)<input name="target_points" type="number" value="10" step="0.1"></label>
-            <label>Stoploss (pts)<input name="stoploss_points" type="number" value="2" step="0.1"></label>
-            <label>EMA Fast<input name="ema_fast" type="number" value="5"></label>
-            <label>EMA Slow<input name="ema_slow" type="number" value="20"></label>
-            <label>ATR Window<input name="atr_window" type="number" value="14"></label>
-            <label>ATR Min (pts)<input name="atr_min_points" type="number" value="2" step="0.1"></label>
-            <label>Daily Loss Cap (₹)<input name="daily_loss_cap" type="number" value="-1000" step="100"></label>
-            <label>
-              Exit Bar Path
-              <select name="exit_bar_path">
-                <option value="color" selected>color</option>
-                <option value="bull">bull</option>
-                <option value="bear">bear</option>
-                <option value="worst">worst</option>
-              </select>
-            </label>
-            <label>
-              Trade Direction
-              <select name="trade_direction">
-                <option value="both" selected>both</option>
-                <option value="long_only">long_only</option>
-                <option value="short_only">short_only</option>
-              </select>
-            </label>
-            <label class="inline">
-              <input type="checkbox" name="confirm_trend_at_entry" checked>
-              Confirm Trend at Entry
-            </label>
-            <label class="inline">
-              <input type="checkbox" name="enable_eod_square_off" checked>
-              Enable EOD Square-off
-            </label>
+
+            <!-- Dynamic strategy parameters will be injected here -->
+            <div id="strategy-params-container" class="form-section"></div>
+
             <label class="inline">
               <input type="checkbox" name="write_csv">
               Save Trades CSV
@@ -131,7 +111,7 @@
     </aside>
 
     <section class="content">
-      <section class="card">
+      <section id="backtest-output-card" class="card">
         <h2>Backtest Output</h2>
         <div id="backtest-message" class="result-box" data-empty="No backtest executed yet."></div>
         <div id="backtest-summary" class="result-box"></div>
@@ -139,6 +119,12 @@
         <div class="tab-buttons">
           <button type="button" class="tab-button active" data-tab-target="recent">Last N Trades</button>
           <button type="button" class="tab-button" data-tab-target="all">All Trades</button>
+          <button type="button" id="copy-trades-btn" class="secondary-btn hidden" style="margin-left: auto;">
+            <span class="btn-text">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+              Copy All Trades
+            </span>
+          </button>
         </div>
         <div id="trades-recent" class="result-box tab-panel scrollable" data-empty="Run a backtest to view trades."></div>
         <div id="trades-all" class="result-box tab-panel scrollable hidden" data-empty="Run a backtest to view trades."></div>
@@ -157,4 +143,20 @@
     <p>API endpoints remain available at <code>/fetch</code> and <code>/backtest</code>. Use this UI for quick interactive runs.</p>
   </footer>
 </body>
+
+<!-- Data Viewer Modal -->
+<div id="data-viewer-modal" class="modal-overlay hidden">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 id="modal-title">Data Viewer</h3>
+      <button id="modal-close-btn" class="modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div id="modal-body" class="modal-body-split">
+      <div id="modal-table-container" class="modal-panel scrollable"></div>
+      <div id="modal-chart-container" class="modal-panel">
+        <canvas id="modal-candlestick-chart"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
 </html>

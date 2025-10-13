@@ -34,12 +34,54 @@ services:
       PGUSER: postgres
       PGPASSWORD: postgres
       PGDATABASE: trading
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4g
+        reservations:
+          cpus: "1"
+          memory: 2g
     ports:
-      - "8000:8000"
+      - "8000:8000" # For development, mount the entire project for hot-reloading
     volumes:
       - .:/app
     restart: unless-stopped
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  tester-app:
+    build:
+      context: .
+      dockerfile: tester_app/Dockerfile
+    container_name: timescale-gravity-tester
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: trading
+      TESTER_MAX_WORKERS: "${TESTER_MAX_WORKERS:-4}"
+      PYTHONPATH: /app
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8g
+        reservations:
+          cpus: "2"
+          memory: 4g
+    ports:
+      - "8100:8100"
+    volumes:
+      - .:/app
+      - ./exports:/tmp
+    restart: unless-stopped
+    command: ["uvicorn", "tester_app.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload"]
 
   # cloudbeaver:
   #   image: dbeaver/cloudbeaver:latest
