@@ -1421,6 +1421,10 @@
                     <span>⚙️</span>
                     <span>Configuration</span>
                 </button>
+                <button class="config-button" onclick="openCacheAdminModal()" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+                    <span>🗄️</span>
+                    <span>Cache Admin</span>
+                </button>
                 <div class="status-badge strategy-badge" id="strategyBadge">scalping v1</div>
                 <div class="status-badge status-stopped" id="statusBadge">
                     <span class="status-indicator"></span>
@@ -2513,6 +2517,332 @@
         window.addEventListener('load', () => {
             initPnLChart();
         });
+
+        // ==================== CACHE ADMIN FUNCTIONS ====================
+
+        function openCacheAdminModal() {
+            document.getElementById('cacheAdminModal').style.display = 'flex';
+            loadCacheStats();
+            loadCachedSeries();
+            loadCacheHealth();
+        }
+
+        function closeCacheAdminModal(event) {
+            if (!event || event.target.id === 'cacheAdminModal') {
+                document.getElementById('cacheAdminModal').style.display = 'none';
+            }
+        }
+
+        async function loadCacheStats() {
+            try {
+                const response = await fetch('/api/cache/stats');
+                const data = await response.json();
+
+                if (data.error) {
+                    document.getElementById('cacheStatsContent').innerHTML =
+                        `<div style="color: var(--danger); padding: 20px; text-align: center;">❌ ${data.error}</div>`;
+                    return;
+                }
+
+                const hitRate = data.hit_rate || 0;
+                const totalRequests = (data.hits || 0) + (data.misses || 0) + (data.partial_hits || 0);
+
+                document.getElementById('cacheStatsContent').innerHTML = `
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                        <div class="stat-card">
+                            <div class="stat-label">Series Count</div>
+                            <div class="stat-value">${data.series_count || 0}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Cache Hits</div>
+                            <div class="stat-value" style="color: var(--success);">${data.hits || 0}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Cache Misses</div>
+                            <div class="stat-value" style="color: var(--danger);">${data.misses || 0}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Partial Hits</div>
+                            <div class="stat-value" style="color: var(--warning);">${data.partial_hits || 0}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Hit Rate</div>
+                            <div class="stat-value" style="color: ${hitRate > 70 ? 'var(--success)' : hitRate > 40 ? 'var(--warning)' : 'var(--danger)'};">${hitRate.toFixed(1)}%</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">TTL Refreshes</div>
+                            <div class="stat-value">${data.ttl_refreshes || 0}</div>
+                        </div>
+                    </div>
+                    ${!data.metrics_enabled ? '<div style="margin-top: 16px; padding: 12px; background: var(--warning-light); color: var(--dark); border-radius: 8px; font-size: 13px;">⚠️ Metrics tracking is disabled. Set ENABLE_CACHE_METRICS=true in .env to enable.</div>' : ''}
+                `;
+            } catch (error) {
+                document.getElementById('cacheStatsContent').innerHTML =
+                    `<div style="color: var(--danger); padding: 20px; text-align: center;">❌ Error loading stats: ${error.message}</div>`;
+            }
+        }
+
+        async function loadCachedSeries() {
+            try {
+                const response = await fetch('/api/cache/series');
+                const data = await response.json();
+
+                if (data.error) {
+                    document.getElementById('cacheSeriesContent').innerHTML =
+                        `<div style="color: var(--danger); padding: 20px; text-align: center;">❌ ${data.error}</div>`;
+                    return;
+                }
+
+                const series = data.series || [];
+
+                if (series.length === 0) {
+                    document.getElementById('cacheSeriesContent').innerHTML =
+                        '<div style="padding: 40px; text-align: center; color: var(--gray-500);">📭 No cached series found</div>';
+                    return;
+                }
+
+                let html = `
+                    <div style="margin-bottom: 12px; color: var(--gray-600); font-size: 13px;">
+                        Total: ${data.total} series ${data.stale_count > 0 ? `| <span style="color: var(--warning);">⚠️ ${data.stale_count} stale</span>` : ''}
+                    </div>
+                    <div style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                            <thead>
+                                <tr style="background: var(--gray-100); text-align: left;">
+                                    <th style="padding: 10px; border-bottom: 2px solid var(--gray-300);">Symbol</th>
+                                    <th style="padding: 10px; border-bottom: 2px solid var(--gray-300);">Exchange</th>
+                                    <th style="padding: 10px; border-bottom: 2px solid var(--gray-300);">Interval</th>
+                                    <th style="padding: 10px; border-bottom: 2px solid var(--gray-300);">First Date</th>
+                                    <th style="padding: 10px; border-bottom: 2px solid var(--gray-300);">Last Date</th>
+                                    <th style="padding: 10px; border-bottom: 2px solid var(--gray-300); text-align: right;">Rows</th>
+                                    <th style="padding: 10px; border-bottom: 2px solid var(--gray-300); text-align: right;">Age (h)</th>
+                                    <th style="padding: 10px; border-bottom: 2px solid var(--gray-300); text-align: center;">Status</th>
+                                    <th style="padding: 10px; border-bottom: 2px solid var(--gray-300); text-align: center;">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                `;
+
+                series.forEach(s => {
+                    const staleIcon = s.stale ? '⚠️' : '✓';
+                    const staleColor = s.stale ? 'var(--warning)' : 'var(--success)';
+                    html += `
+                        <tr style="border-bottom: 1px solid var(--gray-200);">
+                            <td style="padding: 10px; font-weight: 500;">${s.symbol}</td>
+                            <td style="padding: 10px;">${s.exchange}</td>
+                            <td style="padding: 10px;">${s.interval}</td>
+                            <td style="padding: 10px; font-size: 11px; color: var(--gray-600);">${s.first_ts.split(' ')[0]}</td>
+                            <td style="padding: 10px; font-size: 11px; color: var(--gray-600);">${s.last_ts.split(' ')[0]}</td>
+                            <td style="padding: 10px; text-align: right;">${s.rows_count.toLocaleString()}</td>
+                            <td style="padding: 10px; text-align: right;">${s.age_hours.toFixed(1)}</td>
+                            <td style="padding: 10px; text-align: center; color: ${staleColor}; font-size: 16px;">${staleIcon}</td>
+                            <td style="padding: 10px; text-align: center;">
+                                <button onclick="clearSeriesCache('${s.symbol}', '${s.exchange}', '${s.interval}')"
+                                        style="background: var(--danger); color: white; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; transition: var(--transition-fast);">
+                                    🗑️ Clear
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                });
+
+                html += '</tbody></table></div>';
+                document.getElementById('cacheSeriesContent').innerHTML = html;
+            } catch (error) {
+                document.getElementById('cacheSeriesContent').innerHTML =
+                    `<div style="color: var(--danger); padding: 20px; text-align: center;">❌ Error loading series: ${error.message}</div>`;
+            }
+        }
+
+        async function loadCacheHealth() {
+            try {
+                const response = await fetch('/api/cache/health');
+                const data = await response.json();
+
+                if (data.error) {
+                    document.getElementById('cacheHealthContent').innerHTML =
+                        `<div style="color: var(--danger); padding: 20px; text-align: center;">❌ ${data.error}</div>`;
+                    return;
+                }
+
+                const statusColor = data.status === 'healthy' ? 'var(--success)' : 'var(--danger)';
+                const statusIcon = data.status === 'healthy' ? '✅' : '❌';
+
+                let html = `
+                    <div style="display: grid; gap: 16px;">
+                        <div style="padding: 16px; background: ${data.status === 'healthy' ? 'var(--success-light)' : 'var(--danger-light)'};
+                                    background-opacity: 0.1; border-radius: 12px; border-left: 4px solid ${statusColor};">
+                            <div style="font-size: 18px; font-weight: 700; color: ${statusColor}; margin-bottom: 4px;">
+                                ${statusIcon} System ${data.status.toUpperCase()}
+                            </div>
+                            <div style="font-size: 12px; color: var(--gray-600);">${data.timestamp}</div>
+                        </div>
+
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px;">
+                            <div class="stat-card">
+                                <div class="stat-label">Database</div>
+                                <div class="stat-value" style="color: ${data.database_connected ? 'var(--success)' : 'var(--danger)'};">
+                                    ${data.database_connected ? '✅ Connected' : '❌ Disconnected'}
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Table Status</div>
+                                <div class="stat-value" style="color: ${data.table_exists ? 'var(--success)' : 'var(--danger)'};">
+                                    ${data.table_exists ? '✅ Exists' : '❌ Missing'}
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Total Rows</div>
+                                <div class="stat-value">${(data.total_rows || 0).toLocaleString()}</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Metrics</div>
+                                <div class="stat-value" style="color: ${data.metrics_enabled ? 'var(--success)' : 'var(--warning)'};">
+                                    ${data.metrics_enabled ? '✅ Enabled' : '⚠️ Disabled'}
+                                </div>
+                            </div>
+                        </div>
+                `;
+
+                if (data.issues && data.issues.length > 0) {
+                    html += '<div style="margin-top: 12px;"><strong style="color: var(--danger);">Issues:</strong><ul>';
+                    data.issues.forEach(issue => {
+                        html += `<li style="color: var(--danger); margin-top: 4px;">❌ ${issue}</li>`;
+                    });
+                    html += '</ul></div>';
+                }
+
+                if (data.warnings && data.warnings.length > 0) {
+                    html += '<div style="margin-top: 12px;"><strong style="color: var(--warning);">Warnings:</strong><ul>';
+                    data.warnings.forEach(warning => {
+                        html += `<li style="color: var(--warning); margin-top: 4px;">⚠️ ${warning}</li>`;
+                    });
+                    html += '</ul></div>';
+                }
+
+                html += '</div>';
+                document.getElementById('cacheHealthContent').innerHTML = html;
+            } catch (error) {
+                document.getElementById('cacheHealthContent').innerHTML =
+                    `<div style="color: var(--danger); padding: 20px; text-align: center;">❌ Error loading health: ${error.message}</div>`;
+            }
+        }
+
+        async function clearSeriesCache(symbol, exchange, interval) {
+            if (!confirm(`Are you sure you want to clear cache for ${symbol}@${exchange}:${interval}?\n\nThis will permanently delete all cached data for this series.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/cache/clear', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol, exchange, interval })
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    alert(`✅ ${data.message}`);
+                    loadCachedSeries();
+                    loadCacheStats();
+                    loadCacheHealth();
+                } else {
+                    alert(`❌ Error: ${data.error}`);
+                }
+            } catch (error) {
+                alert(`❌ Error: ${error.message}`);
+            }
+        }
+
+        async function resetCacheStats() {
+            if (!confirm('Are you sure you want to reset all cache statistics?\n\nThis will reset all hit/miss counters to zero.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/cache/reset-stats', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    alert('✅ Cache statistics have been reset');
+                    loadCacheStats();
+                } else {
+                    alert(`❌ Error: ${data.error}`);
+                }
+            } catch (error) {
+                alert(`❌ Error: ${error.message}`);
+            }
+        }
+
+        function refreshCacheAdmin() {
+            loadCacheStats();
+            loadCachedSeries();
+            loadCacheHealth();
+        }
+
     </script>
+
+    <!-- Cache Admin Modal -->
+    <div class="modal-overlay" id="cacheAdminModal" onclick="closeCacheAdminModal(event)" style="display: none;">
+        <div class="modal-content" onclick="event.stopPropagation()" style="max-width: 1400px; max-height: 90vh; overflow-y: auto;">
+            <div class="modal-header">
+                <h2>
+                    <span>🗄️</span>
+                    <span>Cache Administration</span>
+                </h2>
+                <button class="modal-close" onclick="closeCacheAdminModal()" title="Close">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 24px;">
+                <!-- Action Buttons -->
+                <div style="display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap;">
+                    <button onclick="refreshCacheAdmin()" class="btn btn-primary" style="display: flex; align-items: center; gap: 8px;">
+                        <span>🔄</span>
+                        <span>Refresh</span>
+                    </button>
+                    <button onclick="resetCacheStats()" class="btn btn-warning" style="display: flex; align-items: center; gap: 8px;">
+                        <span>🔁</span>
+                        <span>Reset Stats</span>
+                    </button>
+                </div>
+
+                <!-- Cache Statistics Section -->
+                <div style="margin-bottom: 32px;">
+                    <h3 style="margin-bottom: 16px; font-size: 18px; color: var(--dark); display: flex; align-items: center; gap: 8px;">
+                        <span>📊</span>
+                        <span>Cache Statistics</span>
+                    </h3>
+                    <div id="cacheStatsContent" style="background: var(--light); padding: 20px; border-radius: 12px;">
+                        <div style="text-align: center; color: var(--gray-500); padding: 20px;">Loading...</div>
+                    </div>
+                </div>
+
+                <!-- System Health Section -->
+                <div style="margin-bottom: 32px;">
+                    <h3 style="margin-bottom: 16px; font-size: 18px; color: var(--dark); display: flex; align-items: center; gap: 8px;">
+                        <span>❤️</span>
+                        <span>System Health</span>
+                    </h3>
+                    <div id="cacheHealthContent" style="background: var(--light); padding: 20px; border-radius: 12px;">
+                        <div style="text-align: center; color: var(--gray-500); padding: 20px;">Loading...</div>
+                    </div>
+                </div>
+
+                <!-- Cached Series Section -->
+                <div>
+                    <h3 style="margin-bottom: 16px; font-size: 18px; color: var(--dark); display: flex; align-items: center; gap: 8px;">
+                        <span>📋</span>
+                        <span>Cached Series</span>
+                    </h3>
+                    <div id="cacheSeriesContent" style="background: var(--light); padding: 20px; border-radius: 12px;">
+                        <div style="text-align: center; color: var(--gray-500); padding: 20px;">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>

@@ -438,6 +438,117 @@ def get_logs():
     logs = list(bot_manager.log_queue)
     return jsonify({'logs': logs})
 
+# ==================== CACHE ADMIN API ====================
+
+# Import cache admin functions
+try:
+    from db_aware_history import (
+        get_cache_stats,
+        list_cached_series,
+        clear_cache_for_series,
+        health_check,
+        reset_cache_stats,
+        CACHE_TTL_HOURS,
+        ENABLE_METRICS,
+    )
+    CACHE_ADMIN_AVAILABLE = True
+except ImportError:
+    CACHE_ADMIN_AVAILABLE = False
+    print("[WARN] Cache admin functions not available")
+
+@app.route('/api/cache/stats', methods=['GET'])
+def cache_stats():
+    """Get cache statistics"""
+    if not CACHE_ADMIN_AVAILABLE:
+        return jsonify({'error': 'Cache admin not available'}), 503
+
+    try:
+        stats = get_cache_stats()
+        stats['cache_ttl_hours'] = CACHE_TTL_HOURS
+        stats['metrics_enabled'] = ENABLE_METRICS
+        return jsonify(stats)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/cache/series', methods=['GET'])
+def cache_series():
+    """List all cached series"""
+    if not CACHE_ADMIN_AVAILABLE:
+        return jsonify({'error': 'Cache admin not available'}), 503
+
+    try:
+        df = list_cached_series()
+        if df.empty:
+            return jsonify({'series': []})
+
+        # Convert DataFrame to JSON-serializable format
+        df_copy = df.copy()
+        df_copy['first_ts'] = df_copy['first_ts'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        df_copy['last_ts'] = df_copy['last_ts'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        series_list = df_copy.to_dict(orient='records')
+
+        return jsonify({
+            'series': series_list,
+            'total': len(series_list),
+            'stale_count': int(df['stale'].sum())
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/cache/clear', methods=['POST'])
+def cache_clear():
+    """Clear cache for a specific series"""
+    if not CACHE_ADMIN_AVAILABLE:
+        return jsonify({'error': 'Cache admin not available'}), 503
+
+    data = request.json
+    symbol = data.get('symbol', '').upper()
+    exchange = data.get('exchange', '').upper()
+    interval = data.get('interval', '')
+
+    if not symbol or not exchange or not interval:
+        return jsonify({'error': 'Missing required fields: symbol, exchange, interval'}), 400
+
+    try:
+        deleted = clear_cache_for_series(symbol, exchange, interval)
+        return jsonify({
+            'success': True,
+            'deleted_rows': deleted,
+            'message': f'Successfully deleted {deleted} rows for {symbol}@{exchange}:{interval}'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/cache/health', methods=['GET'])
+def cache_health():
+    """Get cache system health check"""
+    if not CACHE_ADMIN_AVAILABLE:
+        return jsonify({'error': 'Cache admin not available'}), 503
+
+    try:
+        health = health_check()
+        return jsonify(health)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/cache/reset-stats', methods=['POST'])
+def cache_reset_stats():
+    """Reset cache statistics"""
+    if not CACHE_ADMIN_AVAILABLE:
+        return jsonify({'error': 'Cache admin not available'}), 503
+
+    if not ENABLE_METRICS:
+        return jsonify({'error': 'Metrics tracking is disabled'}), 400
+
+    try:
+        reset_cache_stats()
+        return jsonify({
+            'success': True,
+            'message': 'Cache statistics have been reset'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # ==================== PAPER TRADING BOT ====================
 
 class PaperTradingBot:
