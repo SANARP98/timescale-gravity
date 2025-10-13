@@ -233,6 +233,108 @@ button:disabled {
   font-family: inherit;
 }
 
+.form select[multiple] {
+  padding: 0.4rem;
+  min-height: 120px;
+  background: linear-gradient(135deg, #f8fafc, #ffffff);
+  border: 2px solid #cbd5e1;
+}
+
+.form select[multiple]:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.form select[multiple] option {
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  margin: 0.2rem;
+  background: white;
+  border: 1px solid #e2e8f0;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.form select[multiple] option:hover {
+  background: #eff6ff;
+  border-color: #3b82f6;
+}
+
+.form select[multiple] option:checked {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: white;
+  font-weight: 600;
+  border-color: #1d4ed8;
+}
+
+/* Selected items display (chips/tags) */
+.multi-select-wrapper {
+  position: relative;
+}
+
+.selected-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  min-height: 2rem;
+  padding: 0.5rem;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.selected-items:empty {
+  display: none;
+}
+
+.selected-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: white;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  animation: slideIn 0.2s ease;
+}
+
+.selected-item .remove-btn {
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  color: white;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  font-weight: bold;
+  transition: background 0.15s ease;
+  padding: 0;
+  line-height: 1;
+}
+
+.selected-item .remove-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .form textarea {
   resize: vertical;
 }

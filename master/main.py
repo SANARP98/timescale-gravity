@@ -234,6 +234,7 @@ class ConfigRequest(BaseModel):
     test_name: Optional[str] = None
     exchange: Optional[str] = "NFO"
     interval: Optional[str] = "5m"
+    option_selection: Optional[str] = "both"
 
 
 class ExportResponse(BaseModel):
@@ -615,6 +616,7 @@ def multi_configure(config: ConfigRequest) -> ControlResponse:
             "end_date": config.end_date,
             "starting_capital": config.starting_capital,
             "qty_per_point": config.qty_per_point,
+            "option_selection": config.option_selection or "both",
             "brokerage_per_trade": 0.0,
             "slippage_points": 0.0,
         }

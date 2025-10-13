@@ -921,13 +921,18 @@ function generatePermutationField(name, schema) {
         return `<option value="${value}"${selected}>${label}</option>`;
       })
       .join("");
+    const size = Math.min(schema.enum.length, 6);
+    const selectId = `select-${name}-${Date.now()}`;
     return `
       <label>
         ${title}
-        <select ${dataAttrs} name="${name}" multiple size="4">
-          ${options}
-        </select>
-        <p class="field-help">Select one or more values (Cmd/Ctrl + click).</p>
+        <div class="multi-select-wrapper">
+          <select ${dataAttrs} name="${name}" id="${selectId}" multiple size="${size}">
+            ${options}
+          </select>
+          <div class="selected-items" data-for="${selectId}"></div>
+        </div>
+        <p class="field-help">💡 Click to select multiple values. Click × on chips below to remove.</p>
         ${description}
       </label>
     `;
@@ -936,14 +941,18 @@ function generatePermutationField(name, schema) {
   if (schema.type === "boolean") {
     const trueSelected = defaultValue === true ? " selected" : "";
     const falseSelected = defaultValue === false ? " selected" : "";
+    const selectId = `select-${name}-${Date.now()}`;
     return `
       <label>
         ${title}
-        <select ${dataAttrs} name="${name}" multiple size="2">
-          <option value="true"${trueSelected}>True</option>
-          <option value="false"${falseSelected}>False</option>
-        </select>
-        <p class="field-help">Select one or both options.</p>
+        <div class="multi-select-wrapper">
+          <select ${dataAttrs} name="${name}" id="${selectId}" multiple size="2">
+            <option value="true"${trueSelected}>True</option>
+            <option value="false"${falseSelected}>False</option>
+          </select>
+          <div class="selected-items" data-for="${selectId}"></div>
+        </div>
+        <p class="field-help">💡 Click to select one or both values. Click × on chips below to remove.</p>
         ${description}
       </label>
     `;
@@ -970,6 +979,66 @@ function generatePermutationField(name, schema) {
   `;
 }
 
+function initializeMultiSelectChips(container) {
+  if (!container) return;
+
+  // Use setTimeout to ensure DOM is fully rendered
+  setTimeout(() => {
+    const multiSelects = container.querySelectorAll('select[multiple]');
+
+    multiSelects.forEach((select) => {
+      const selectId = select.id;
+      if (!selectId) return;
+
+      const chipsContainer = container.querySelector(`.selected-items[data-for="${selectId}"]`);
+      if (!chipsContainer) {
+        console.warn(`Chips container not found for select ${selectId}`);
+        return;
+      }
+
+      // Function to update chips display
+      const updateChips = () => {
+        chipsContainer.innerHTML = '';
+        const selectedOptions = Array.from(select.selectedOptions);
+
+        if (selectedOptions.length === 0) {
+          chipsContainer.style.display = 'none';
+        } else {
+          chipsContainer.style.display = 'flex';
+        }
+
+        selectedOptions.forEach((option) => {
+          const chip = document.createElement('span');
+          chip.className = 'selected-item';
+          chip.innerHTML = `
+            ${option.textContent}
+            <button type="button" class="remove-btn" data-value="${option.value}">×</button>
+          `;
+
+          // Add click handler to remove button
+          const removeBtn = chip.querySelector('.remove-btn');
+          if (removeBtn) {
+            removeBtn.addEventListener('click', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              option.selected = false;
+              updateChips();
+            });
+          }
+
+          chipsContainer.appendChild(chip);
+        });
+      };
+
+      // Update chips when selection changes
+      select.addEventListener('change', updateChips);
+
+      // Initialize chips for pre-selected options
+      updateChips();
+    });
+  }, 50);
+}
+
 function renderPermutationParams(strategyName) {
   if (!permutationParamsContainer) return;
   permutationParamsContainer.innerHTML = "";
@@ -990,6 +1059,9 @@ function renderPermutationParams(strategyName) {
     <div class="form-section-title">Parameter Ranges</div>
     <div class="form-section-fields">${fields}</div>
   `;
+
+  // Initialize multi-select chip displays
+  initializeMultiSelectChips(permutationParamsContainer);
 }
 
 function collectPermutationParamRanges() {
@@ -1283,6 +1355,7 @@ async function handlePermutationSubmit(event) {
     max_workers: Number(formData.get("max_workers")),
     exchange: (formData.get("exchange") || "NFO").toUpperCase(),
     interval: formData.get("interval") || "5m",
+    option_selection: formData.get("option_selection") || "both",
     param_ranges: {},
   };
 
@@ -1374,26 +1447,13 @@ function renderMultiParamFields(strategyName) {
 
   const { properties } = strategy.parameters;
   const fields = Object.entries(properties)
-    .map(([name, schema]) => {
-      const title = schema.title || humanize(name);
-      const description = schema.description ? `<p class="field-help">${schema.description}</p>` : "";
-      const type = schema.type || "string";
-      const placeholder = type === "integer" || type === "number"
-        ? "e.g. 2,4,6 or 2-10:2"
-        : "Comma-separated values";
-
-      return `
-        <label>
-          ${title}
-          <input name="${name}" type="text" data-param="${name}" data-type="${type}" placeholder="${placeholder}">
-          <p class="field-help">Enter comma-separated values or ranges (start-end[:step]). Leave blank to use strategy defaults.</p>
-          ${description}
-        </label>
-      `;
-    })
+    .map(([name, schema]) => generatePermutationField(name, schema))
     .join("");
 
   multiParamRangesFields.innerHTML = fields;
+
+  // Initialize multi-select chip displays
+  initializeMultiSelectChips(multiParamRangesFields);
 }
 
 function collectMultiParamRanges() {
@@ -1405,6 +1465,16 @@ function collectMultiParamRanges() {
     const name = field.dataset.param;
     const type = field.dataset.type || "string";
 
+    // Handle multi-select dropdowns (for enums and booleans)
+    if (field instanceof HTMLSelectElement && field.multiple) {
+      const selected = Array.from(field.selectedOptions).map((option) => coerceValue(option.value, type));
+      if (selected.length) {
+        params[name] = uniqueValues(selected);
+      }
+      return;
+    }
+
+    // Handle text inputs (for numeric ranges)
     if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
       const raw = field.value.trim();
       if (!raw) return;
@@ -1470,6 +1540,18 @@ async function autoPopulateRanges() {
 async function applyMultiConfig(event) {
   event.preventDefault();
   const formData = new FormData(multiConfigForm);
+  // Handle option_selection (can be multi-select now)
+  const optionSelectionField = multiConfigForm.querySelector('[name="option_selection"]');
+  let optionSelectionValues = ["both"]; // default
+  if (optionSelectionField && optionSelectionField.multiple) {
+    const selected = Array.from(optionSelectionField.selectedOptions).map(opt => opt.value);
+    if (selected.length > 0) {
+      optionSelectionValues = selected;
+    }
+  } else if (optionSelectionField) {
+    optionSelectionValues = [formData.get("option_selection") || "both"];
+  }
+
   const payload = {
     strategy: formData.get("strategy"),
     symbols: parseSymbolsInput(formData.get("symbols") || ""),
@@ -1485,6 +1567,10 @@ async function applyMultiConfig(event) {
 
   try {
     payload.param_ranges = collectMultiParamRanges();
+    // Add option_selection to param_ranges if multiple values selected
+    if (optionSelectionValues.length > 0) {
+      payload.param_ranges.option_selection = optionSelectionValues;
+    }
   } catch (err) {
     if (multiStatus) {
       multiStatus.innerHTML = `<p class="muted">Error: ${err.message}</p>`;
@@ -2169,6 +2255,13 @@ loadSingleStrategies()
       setOutput(fetchResult, `Error: ${err.message}`);
     }
   });
+
+// Initialize chips for option_selection in multi-config form
+if (multiConfigForm) {
+  setTimeout(() => {
+    initializeMultiSelectChips(multiConfigForm);
+  }, 100);
+}
 
 loadMultiStrategies()
   .then(() => Promise.all([updateMultiStatus(), refreshHistory()]))

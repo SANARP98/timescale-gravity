@@ -48,12 +48,8 @@
 
         <section class="card wide">
           <h2>Run Backtest</h2>
-          <div class="mode-toggle" role="group" aria-label="Backtest Mode">
-            <button type="button" class="mode-toggle-btn active" data-mode="single">Single Backtest</button>
-            <button type="button" class="mode-toggle-btn" data-mode="permutation">Permutation Batch</button>
-          </div>
 
-          <form id="backtest-form" class="form run-mode-section" data-mode="single">
+          <form id="backtest-form" class="form" data-mode="single">
             <div class="two-col">
               <label>Symbol <input name="symbol" value="NIFTY28OCT2525200PE" required></label>
               <label>Exchange <input name="exchange" value="NFO" required></label>
@@ -89,31 +85,6 @@
             </div>
             <div id="single-strategy-params" class="form-section" data-empty="Strategy exposes no tunable parameters."></div>
             <button type="submit">Run Backtest</button>
-          </form>
-
-          <form id="permutation-form" class="form run-mode-section hidden" data-mode="permutation">
-            <div class="two-col">
-              <label>
-                Strategy
-                <select name="strategy" id="permutation-strategy-select" required>
-                  <option value="">Loading…</option>
-                </select>
-              </label>
-              <label>Custom Config Name <input name="test_name" placeholder="e.g. Morning Batch, High Targets"></label>
-              <label class="span-two">Symbols (comma or newline separated)
-                <textarea name="symbols" rows="3" placeholder="NIFTY28OCT2525200CE&#10;NIFTY28OCT2525200PE"></textarea>
-              </label>
-              <label>Exchange <input name="exchange" value="NFO" required></label>
-              <label>Interval <input name="interval" value="5m" required></label>
-              <label>Start Date <input type="date" name="start_date" value="2025-09-01" required></label>
-              <label>End Date <input type="date" name="end_date" value="2025-10-06" required></label>
-              <label>Starting Capital <input type="number" name="starting_capital" value="100000" step="1000" required></label>
-              <label>Qty per Point <input type="number" name="qty_per_point" value="150" required></label>
-              <label>Max Workers <input type="number" name="max_workers" value="2" min="1" max="16" required></label>
-            </div>
-            <div id="permutation-params" class="form-section" data-empty="Strategy exposes no tunable parameters for batching."></div>
-            <p class="form-note">Permutation batches queue parameter combinations, stream results into the database, and continue running in the background.</p>
-            <button type="submit">Queue Permutation Batch</button>
           </form>
 
           <div class="stack">
@@ -165,6 +136,18 @@
             <label>Starting Capital <input type="number" name="starting_capital" value="100000" step="1000" required></label>
             <label>Qty per Point <input type="number" name="qty_per_point" value="150" required></label>
             <label>Max Workers <input type="number" name="max_workers" value="2" min="1" max="16" required></label>
+            <label>
+              Option Selection
+              <div class="multi-select-wrapper">
+                <select name="option_selection" id="multi-option-selection" multiple size="3">
+                  <option value="both" selected>Both (PE & CE)</option>
+                  <option value="pe">PE only</option>
+                  <option value="ce">CE only</option>
+                </select>
+                <div class="selected-items" data-for="multi-option-selection"></div>
+              </div>
+              <p class="field-help">💡 Select one or more option types to test. Click × on chips to remove.</p>
+            </label>
             <div id="multi-param-ranges-container" class="form-section">
               <div class="form-section-title">Parameter Ranges</div>
               <div id="multi-param-ranges-fields" class="form-section-fields"></div>
