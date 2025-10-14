@@ -394,6 +394,9 @@ class RandomScalpBot:
         # Serialize broker writes (orders/cancels)
         self.order_lock = RLock()
 
+        # Track broker order sweeps to avoid spamming APIs when flat
+        self.last_order_sweep_ts: float = 0.0
+
         self.last_entry_order_id: Optional[str] = None
 
         # Trailing Stop Loss state
@@ -536,6 +539,40 @@ class RandomScalpBot:
         filled = data.get('filled_quantity') or data.get('filled_qty') or data.get('filledQuantity') or 0
         return int(filled)
 
+    @staticmethod
+    def _normalize_status(status: Optional[str]) -> str:
+        return str(status or "").upper().strip()
+
+    @classmethod
+    def _is_order_closed_status(cls, status: Optional[str]) -> bool:
+        normalized = cls._normalize_status(status)
+        if not normalized:
+            return False
+        closed_tokens = [
+            "CANCEL",
+            "COMPLETE",
+            "FILLED",
+            "EXECUTED",
+            "TRADED",
+            "WITHDRAWN",
+        ]
+        return any(token in normalized for token in closed_tokens)
+
+    @classmethod
+    def _is_order_active_status(cls, status: Optional[str]) -> bool:
+        normalized = cls._normalize_status(status)
+        if not normalized:
+            return True
+        active_tokens = [
+            "OPEN",
+            "PENDING",
+            "TRIGGER",
+            "VALIDATION",
+            "QUEUED",
+            "PARTIAL",
+        ]
+        return any(token in normalized for token in active_tokens)
+
     def _safe_placeorder(self, **params) -> Optional[Dict[str, Any]]:
         """Idempotent order placement with timeout and retry."""
         max_attempts = min(self.cfg.max_order_retries, 3)
@@ -564,6 +601,35 @@ class RandomScalpBot:
 
         log(f"[{STRATEGY_NAME}] [ERROR] placeorder failed after {max_attempts} attempts: {last_error}")
         return None
+
+    def _confirm_order_inactive(self, order_id: str, reason: Optional[str] = None, attempts: int = 3) -> bool:
+        """Poll order status a few times to ensure the broker marks it inactive."""
+        if not hasattr(self.client, "orderstatus"):
+            return True  # Best effort if API unavailable
+
+        reason_text = f" ({reason})" if reason else ""
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(0.2 * attempt)
+            try:
+                resp = self.client.orderstatus(order_id=order_id, strategy=STRATEGY_NAME)
+            except Exception as exc:
+                log(f"[{STRATEGY_NAME}] [WARN] orderstatus check{reason_text} attempt {attempt+1}/{attempts} failed: {exc}")
+                continue
+
+            if resp.get('status') != 'success':
+                log(f"[{STRATEGY_NAME}] [WARN] orderstatus check{reason_text} returned {resp}")
+                continue
+
+            status = self._normalize_status(resp.get('data', {}).get('order_status') or resp.get('data', {}).get('status'))
+            if self._is_order_closed_status(status):
+                return True
+            if not self._is_order_active_status(status):
+                # Treat unknown status as success to avoid looping forever
+                return True
+
+        log(f"[{STRATEGY_NAME}] [WARN] Could not confirm cancellation for oid={order_id}{reason_text}")
+        return False
 
     def _place_stop_order(self, quantity: int, trigger_price: float, action: str = "SELL") -> Optional[Dict[str, Any]]:
         """Place stop loss with SL-M → SL fallback and trigger validation."""
@@ -639,8 +705,8 @@ class RandomScalpBot:
         """Sync exit order quantities when partial fills occur."""
         if remaining_qty <= 0:
             log(f"[{STRATEGY_NAME}] [SYNC] No remaining quantity, clearing exits")
-            self.cancel_order_silent(self.tp_order_id)
-            self.cancel_order_silent(self.sl_order_id)
+            self.cancel_order_silent(self.tp_order_id, context="sync_clear_tp")
+            self.cancel_order_silent(self.sl_order_id, context="sync_clear_sl")
             self.tp_order_id = None
             self.sl_order_id = None
             return
@@ -649,8 +715,8 @@ class RandomScalpBot:
             log(f"[{STRATEGY_NAME}] [SYNC] Adjusting exits for remaining qty {remaining_qty}")
 
             # Cancel existing exits
-            self.cancel_order_silent(self.tp_order_id)
-            self.cancel_order_silent(self.sl_order_id)
+            self.cancel_order_silent(self.tp_order_id, context="sync_tp")
+            self.cancel_order_silent(self.sl_order_id, context="sync_sl")
             self.tp_order_id = None
             self.sl_order_id = None
 
@@ -689,13 +755,14 @@ class RandomScalpBot:
         """Clean up stale exit orders when flat."""
         if self.tp_order_id or self.sl_order_id:
             log(f"[{STRATEGY_NAME}] [CLEANUP] Removing stale orders (flat position)")
-            self.cancel_order_silent(self.tp_order_id)
-            self.cancel_order_silent(self.sl_order_id)
+            self.cancel_order_silent(self.tp_order_id, context="flat_cleanup:tp")
+            self.cancel_order_silent(self.sl_order_id, context="flat_cleanup:sl")
             self.tp_order_id = None
             self.sl_order_id = None
             self.tp_filled_qty = 0
             self.sl_filled_qty = 0
             self._persist()
+        self._sweep_symbol_orders(trigger_reason="flat_cleanup")
 
     def _ensure_exits(self) -> None:
         """Re-arm exit protection if missing while in position."""
@@ -988,10 +1055,10 @@ class RandomScalpBot:
                 # Immediately flatten any residual
                 self._ensure_flat_position("OCO_RACE_BOTH_FILLED")
             elif tp_complete:
-                self.cancel_order_silent(self.sl_order_id)
+                self.cancel_order_silent(self.sl_order_id, context="tp_complete_cancel_sl")
                 self._realize_exit(tp_price or self.entry_price, "Target Hit")
             elif sl_complete:
-                self.cancel_order_silent(self.tp_order_id)
+                self.cancel_order_silent(self.tp_order_id, context="sl_complete_cancel_tp")
                 self._realize_exit(sl_price or self.entry_price, "Stoploss Hit")
 
             # Market-on-target: if enabled and LTP >= TP, convert to market
@@ -1001,8 +1068,8 @@ class RandomScalpBot:
                     ltp = float(q.get('data', {}).get('ltp') or 0)
                     if ltp >= self.tp_level:
                         log(f"[{STRATEGY_NAME}] [MARKET_ON_TARGET] LTP {ltp:.2f} >= TP {self.tp_level:.2f}, converting to MARKET")
-                        self.cancel_order_silent(self.tp_order_id)
-                        self.cancel_order_silent(self.sl_order_id)
+                        self.cancel_order_silent(self.tp_order_id, context="market_on_target_tp")
+                        self.cancel_order_silent(self.sl_order_id, context="market_on_target_sl")
                         remaining = self.actual_filled_qty - total_exits
                         if remaining > 0:
                             self._safe_placeorder(
@@ -1072,7 +1139,7 @@ class RandomScalpBot:
             log(f"[{STRATEGY_NAME}] [TRAIL] 📈 Moving SL: ₹{self.sl_level:.2f} → ₹{new_sl:.2f} (locking ₹{trail_amount:.2f})")
 
             # Cancel existing SL order
-            self.cancel_order_silent(self.sl_order_id)
+            self.cancel_order_silent(self.sl_order_id, context="trail_adjust")
 
             # Place new SL order
             remaining_qty = self.actual_filled_qty - self.tp_filled_qty - self.sl_filled_qty
@@ -1260,15 +1327,97 @@ class RandomScalpBot:
             except Exception as e:
                 log(f"[{STRATEGY_NAME}] [ERROR] place_exit_legs_for_qty: {e}")
 
-    def cancel_order_silent(self, oid: Optional[str]):
-        if not oid:
+    def _sweep_symbol_orders(self, trigger_reason: Optional[str] = None, force: bool = False) -> None:
+        """Fetch the orderbook and cancel any lingering orders for our symbol."""
+        if not hasattr(self.client, "orderbook"):
             return
+
+        now = time.time()
+        if not force and (now - self.last_order_sweep_ts) < 30:
+            return
+        self.last_order_sweep_ts = now
+
+        reason_text = f" ({trigger_reason})" if trigger_reason else ""
+        try:
+            resp = self.client.orderbook()
+        except Exception as exc:
+            log(f"[{STRATEGY_NAME}] [WARN] Orderbook sweep{reason_text} failed: {exc}")
+            return
+
+        if resp.get('status') != 'success':
+            log(f"[{STRATEGY_NAME}] [WARN] Orderbook sweep{reason_text} returned {resp}")
+            return
+
+        ob_data = resp.get('data') or resp.get('results') or resp.get('orderbook') or []
+        entries: list[Any] = []
+
+        if isinstance(ob_data, list):
+            entries = ob_data
+        elif isinstance(ob_data, dict):
+            for key in ("orders", "open_orders", "pending", "openOrders", "list", "data"):
+                value = ob_data.get(key)
+                if isinstance(value, list):
+                    entries.extend(value)
+                elif isinstance(value, dict):
+                    entries.extend(value.values())
+            if not entries and ob_data:
+                entries.extend(ob_data.values())
+        else:
+            log(f"[{STRATEGY_NAME}] [WARN] Orderbook sweep{reason_text} received unsupported payload: {type(ob_data)}")
+            return
+
+        symbol_upper = (self.cfg.symbol or "").upper()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            sym = str(entry.get('symbol') or entry.get('tradingsymbol') or "").upper()
+            if sym != symbol_upper:
+                continue
+
+            status = entry.get('order_status') or entry.get('status')
+            if not self._is_order_active_status(status):
+                continue
+
+            oid = entry.get('orderid') or entry.get('order_id') or entry.get('id') or entry.get('client_order_id')
+            if not oid:
+                continue
+            pending_qty = entry.get('pending_quantity') or entry.get('pending_qty') or entry.get('quantity')
+            if isinstance(pending_qty, str):
+                try:
+                    pending_qty = float(pending_qty)
+                except ValueError:
+                    pending_qty = None
+            if pending_qty is not None and float(pending_qty) <= 0:
+                continue
+
+            log(f"[{STRATEGY_NAME}] [SWEEP] Cancelling lingering oid={oid} status={status}{reason_text}")
+            self.cancel_order_silent(str(oid), context=f"sweep:{trigger_reason or 'cleanup'}", allow_sweep=False)
+
+    def cancel_order_silent(self, oid: Optional[str], context: str = "", allow_sweep: bool = True) -> bool:
+        if not oid:
+            return True
+
+        context_text = f" ({context})" if context else ""
         try:
             with self.order_lock:
-                self.client.cancelorder(order_id=oid, strategy=STRATEGY_NAME)
-            log(f"[{STRATEGY_NAME}] [CANCEL] order_id={oid}")
-        except Exception as e:
-            log(f"[{STRATEGY_NAME}] [WARN] cancel failed: {e}")
+                resp = self.client.cancelorder(order_id=oid, strategy=STRATEGY_NAME)
+        except Exception as exc:
+            log(f"[{STRATEGY_NAME}] [WARN] cancel{context_text} exception for oid={oid}: {exc}")
+            resp = None
+
+        if not resp or resp.get('status') != 'success':
+            log(f"[{STRATEGY_NAME}] [WARN] cancel{context_text} failed for oid={oid}: {resp}")
+            confirmed = self._confirm_order_inactive(order_id=oid, reason=context)
+        else:
+            confirmed = self._confirm_order_inactive(order_id=oid, reason=context)
+
+        if confirmed:
+            log(f"[{STRATEGY_NAME}] [CANCEL] Confirmed cancel for oid={oid}{context_text}")
+            return True
+
+        if allow_sweep:
+            self._sweep_symbol_orders(trigger_reason=context, force=True)
+        return False
 
     def _realize_exit(self, exit_price: float, reason: str):
         if not self.in_position or self.entry_price is None:
@@ -1293,8 +1442,8 @@ class RandomScalpBot:
             # Clean up any stale exit orders that shouldn't exist
             if self.tp_order_id or self.sl_order_id:
                 log(f"[{STRATEGY_NAME}] [SQUARE_OFF] Cleaning up stale exit orders (no position)")
-                self.cancel_order_silent(self.tp_order_id)
-                self.cancel_order_silent(self.sl_order_id)
+                self.cancel_order_silent(self.tp_order_id, context="square_off_idle_tp")
+                self.cancel_order_silent(self.sl_order_id, context="square_off_idle_sl")
                 self.tp_order_id = None
                 self.sl_order_id = None
                 self._persist()
@@ -1302,8 +1451,8 @@ class RandomScalpBot:
         try:
             action = 'SELL'  # long-only
             # Cancel exit legs first
-            self.cancel_order_silent(self.tp_order_id)
-            self.cancel_order_silent(self.sl_order_id)
+            self.cancel_order_silent(self.tp_order_id, context="square_off_tp")
+            self.cancel_order_silent(self.sl_order_id, context="square_off_sl")
 
             # Place market order to close
             log(f"[{STRATEGY_NAME}] [EOD] Squaring off position")
@@ -1411,10 +1560,10 @@ class RandomScalpBot:
                 self._realize_exit(tp_price or self.entry_price, "Target Hit (recovered - OCO race)")
                 self._ensure_flat_position("startup_oco_race")
             elif tp_filled:
-                self.cancel_order_silent(self.sl_order_id)
+                self.cancel_order_silent(self.sl_order_id, context="startup_tp_filled_cancel_sl")
                 self._realize_exit(tp_price or self.entry_price, "Target Hit (recovered)")
             elif sl_filled:
-                self.cancel_order_silent(self.tp_order_id)
+                self.cancel_order_silent(self.tp_order_id, context="startup_sl_filled_cancel_tp")
                 self._realize_exit(sl_price or self.entry_price, "Stoploss Hit (recovered)")
             # else: both orders still open, continue monitoring
         else:
@@ -1553,8 +1702,8 @@ class RandomScalpBot:
                 log(f"[{STRATEGY_NAME}] [PAUSE] Closing position qty={qty_to_close}")
 
                 # Cancel exit legs first
-                self.cancel_order_silent(self.tp_order_id)
-                self.cancel_order_silent(self.sl_order_id)
+                self.cancel_order_silent(self.tp_order_id, context="pause_tp")
+                self.cancel_order_silent(self.sl_order_id, context="pause_sl")
 
                 # Place market close order with idempotent placement
                 resp = self._safe_placeorder(
