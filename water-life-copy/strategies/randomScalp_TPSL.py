@@ -775,12 +775,17 @@ class RandomScalpBot:
 
     def check_order_status(self):
         """Poll sibling orders to implement OCO safety with race condition protection and partial fill handling."""
+        # When flat, just ensure we don't have stale exits and return
         if not self.in_position:
-            # Retry exit legs if needed
-            if self.entry_price and not self.exit_legs_placed and self.exit_legs_retry_count < self.max_exit_legs_retries:
-                log(f"[{STRATEGY_NAME}] [RETRY] Attempting to place exit legs (attempt {self.exit_legs_retry_count + 1}/{self.max_exit_legs_retries})")
-                self.place_exit_legs()
+            self._cleanup_stale_orders()
             return
+
+        # If in position but exits are missing, retry placing them
+        if (self.entry_price
+            and not self.exit_legs_placed
+            and self.exit_legs_retry_count < self.max_exit_legs_retries):
+            log(f"[{STRATEGY_NAME}] [RETRY] Attempting to place exit legs (attempt {self.exit_legs_retry_count + 1}/{self.max_exit_legs_retries})")
+            self.place_exit_legs()
 
         # Use lock to prevent race condition where both TP and SL get processed simultaneously
         if not self.exit_lock.acquire(blocking=False):
