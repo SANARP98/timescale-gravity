@@ -367,6 +367,7 @@ class RandomScalpBot:
         self.in_position: bool = False
         self.side: Optional[str] = None
         self.entry_price: Optional[float] = None
+        self.entry_price_hint: Optional[float] = None  # LTP snapshot when entry placed
         self.actual_filled_qty: int = 0  # Actual filled quantity (may differ from self.qty on partial fills)
         self.tp_level: Optional[float] = None
         self.sl_level: Optional[float] = None
@@ -389,6 +390,8 @@ class RandomScalpBot:
 
         # Threading safety
         self.exit_lock = Lock()  # OCO race condition protection
+
+        self.last_entry_order_id: Optional[str] = None
 
         # Trailing Stop Loss state
         self.highest_favorable_price: Optional[float] = None  # Track peak price for trailing
@@ -758,17 +761,32 @@ class RandomScalpBot:
                     self.pending_signal = False
                     self.exit_legs_placed = False
                     self.exit_legs_retry_count = 0
-                    self.entry_order_id = None
-                    if actual_avg_price and actual_avg_price > 0:
-                        self.entry_price = actual_avg_price
-                    if not self.entry_price:
-                        log(f"[{STRATEGY_NAME}] [RECONCILE] Entry price unavailable while adopting position")
-                    else:
+                    order_id_lookup = self.entry_order_id or self.last_entry_order_id
+                    entry_price_candidate = None
+                    if order_id_lookup:
+                        try:
+                            st = self.client.orderstatus(order_id=order_id_lookup, strategy=STRATEGY_NAME)
+                            if st.get('status') == 'success':
+                                entry_price_candidate = float(st.get('data', {}).get('average_price') or 0)
+                        except Exception as e:
+                            log(f"[{STRATEGY_NAME}] [WARN] Could not fetch entry price from orderstatus for {order_id_lookup}: {e}")
+                    if not entry_price_candidate and self.entry_price_hint:
+                        entry_price_candidate = float(self.entry_price_hint or 0)
+                    if not entry_price_candidate and actual_avg_price and actual_avg_price > 0:
+                        entry_price_candidate = actual_avg_price
+
+                    if entry_price_candidate and entry_price_candidate > 0:
+                        self.entry_price = entry_price_candidate
+                        self.entry_price_hint = entry_price_candidate
+                        self.entry_order_id = order_id_lookup
+                        self.last_entry_order_id = order_id_lookup
                         self.tp_level = self._round_to_tick(self.entry_price + self.cfg.profit_target_rupees)
                         self.sl_level = self._round_to_tick(self.entry_price - self.cfg.stop_loss_rupees)
                         self.highest_favorable_price = self.entry_price
                         self.sl_trail_active = False
                         self.original_sl_level = self.sl_level
+                    else:
+                        log(f"[{STRATEGY_NAME}] [RECONCILE] Entry price unavailable while adopting position")
                     self._persist()
                     self._ensure_exits()
 
@@ -1014,6 +1032,16 @@ class RandomScalpBot:
             action = "BUY" if side == "LONG" else "SELL"
             log(f"[{STRATEGY_NAME}] 🚀 [ENTRY] {action} {self.cfg.symbol} x {self.qty}")
 
+            # Capture current LTP as a hint in case broker delays fill info
+            self.entry_price_hint = None
+            try:
+                q = self.client.quotes(symbol=self.cfg.symbol, exchange=self.cfg.exchange)
+                hint = float(q.get('data', {}).get('ltp') or 0)
+                if hint > 0:
+                    self.entry_price_hint = hint
+            except Exception as e:
+                log(f"[{STRATEGY_NAME}] [WARN] Could not fetch LTP before entry: {e}")
+
             # Use idempotent order placement
             resp = self._safe_placeorder(
                 strategy=STRATEGY_NAME,
@@ -1029,6 +1057,7 @@ class RandomScalpBot:
                 self.pending_signal = False
                 return
             self.entry_order_id = resp.get('orderid')
+            self.last_entry_order_id = self.entry_order_id
             log(f"[{STRATEGY_NAME}] [ORDER] entry oid={self.entry_order_id}")
 
             # Poll to fetch average_price AND filled_quantity with retry logic
@@ -1038,6 +1067,8 @@ class RandomScalpBot:
                 st = self.client.orderstatus(order_id=self.entry_order_id, strategy=STRATEGY_NAME)
                 data = st.get('data', {})
                 self.entry_price = float(data.get('average_price') or 0)
+                if self.entry_price and self.entry_price > 0:
+                    self.entry_price_hint = self.entry_price
                 filled_qty = self._get_filled_qty(st)
 
                 # Check if order is complete or partially filled
@@ -1060,7 +1091,6 @@ class RandomScalpBot:
                 self.side = None
                 self.pending_signal = False
                 self.exit_legs_placed = False
-                self.entry_order_id = None
                 self.actual_filled_qty = 0
                 self.tp_level = None
                 self.sl_level = None
@@ -1082,6 +1112,8 @@ class RandomScalpBot:
             self.highest_favorable_price = self.entry_price
             self.sl_trail_active = False
             self.original_sl_level = self.sl_level
+
+            self.entry_price_hint = self.entry_price
 
             log(f"[{STRATEGY_NAME}] ✅ ENTRY avg ₹{self.entry_price:.2f} qty {self.actual_filled_qty} | TP ₹{self.tp_level:.2f} | SL ₹{self.sl_level:.2f}")
             log(f"[{STRATEGY_NAME}] STATE={side} qty={self.actual_filled_qty} entry={self.entry_price:.2f} tp={self.tp_level:.2f} sl={self.sl_level:.2f}")
@@ -1256,9 +1288,12 @@ class RandomScalpBot:
         self.in_position = bool(state.get("in_position", False))
         self.side = state.get("side")
         self.entry_price = state.get("entry_price")
+        self.entry_price_hint = state.get("entry_price_hint")
         self.tp_level = state.get("tp_level")
         self.sl_level = state.get("sl_level")
         self.qty = state.get("qty", self.qty)
+        self.entry_order_id = state.get("entry_order_id")
+        self.last_entry_order_id = state.get("last_entry_order_id") or self.entry_order_id
         self.tp_order_id = state.get("tp_order_id")
         self.sl_order_id = state.get("sl_order_id")
         self.realized_pnl_today = state.get("realized_pnl_today", 0.0)
@@ -1324,9 +1359,12 @@ class RandomScalpBot:
                     "in_position": self.in_position,
                     "side": self.side,
                     "entry_price": self.entry_price,
+                    "entry_price_hint": self.entry_price_hint,
                     "tp_level": self.tp_level,
                     "sl_level": self.sl_level,
                     "qty": self.qty,
+                    "entry_order_id": self.entry_order_id,
+                    "last_entry_order_id": self.last_entry_order_id,
                     "tp_order_id": self.tp_order_id,
                     "sl_order_id": self.sl_order_id,
                     "realized_pnl_today": self.realized_pnl_today,
@@ -1341,10 +1379,12 @@ class RandomScalpBot:
         self.in_position = False
         self.side = None
         self.entry_price = None
+        self.entry_price_hint = None
         self.actual_filled_qty = 0
         self.tp_level = None
         self.sl_level = None
         self.entry_order_id = None
+        self.last_entry_order_id = None
         self.tp_order_id = None
         self.sl_order_id = None
         self.tp_filled_qty = 0
