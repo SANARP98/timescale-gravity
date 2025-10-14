@@ -486,6 +486,10 @@ class RandomScalpBot:
 
     def _place_stop_order(self, quantity: int, trigger_price: float, action: str = "SELL") -> Optional[Dict[str, Any]]:
         """Place stop loss with SL-M → SL fallback and trigger validation."""
+        if trigger_price is None:
+            log(f"[{STRATEGY_NAME}] [ERROR] Cannot place stop order without trigger price")
+            return None
+
         # Validate trigger price for long positions (trigger should be < LTP)
         if action == "SELL" and self.side == 'LONG':
             try:
@@ -900,13 +904,19 @@ class RandomScalpBot:
                 log(f"[{STRATEGY_NAME}] [WARN] Entry order not ready, retry {attempt+1}/{max_retries}")
 
             if not self.entry_price or self.actual_filled_qty == 0:
-                log(f"[{STRATEGY_NAME}] [ERROR] Could not get entry details after {max_retries} retries; exit legs will retry in polling loop")
-                self.in_position = True  # Mark in position
-                self.side = 'LONG'
+                log(f"[{STRATEGY_NAME}] [ERROR] Could not get entry details after {max_retries} retries; deferring to reconciliation")
+                self.in_position = False
+                self.side = None
                 self.pending_signal = False
-                self.exit_legs_placed = False  # Will trigger retry in check_order_status
-                # Assume full quantity for safety
-                self.actual_filled_qty = self.qty
+                self.exit_legs_placed = False
+                self.entry_order_id = None
+                self.actual_filled_qty = 0
+                self.tp_level = None
+                self.sl_level = None
+                try:
+                    self.reconcile_position()
+                except Exception as reconcile_err:
+                    log(f"[{STRATEGY_NAME}] [WARN] reconcile_position after entry failure: {reconcile_err}")
                 self._persist()
                 return
 
@@ -938,6 +948,13 @@ class RandomScalpBot:
         if quantity <= 0:
             log(f"[{STRATEGY_NAME}] [ERROR] Cannot place exits for qty {quantity}")
             return
+
+        if self.tp_level is None or self.sl_level is None:
+            if not self.entry_price:
+                log(f"[{STRATEGY_NAME}] [ERROR] Cannot compute exit levels without entry price; skipping exits")
+                return
+            self.tp_level = self._round_to_tick(self.entry_price + self.cfg.profit_target_rupees)
+            self.sl_level = self._round_to_tick(self.entry_price - self.cfg.stop_loss_rupees)
 
         try:
             self.exit_legs_retry_count += 1
