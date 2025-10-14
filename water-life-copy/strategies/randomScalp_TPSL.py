@@ -735,10 +735,28 @@ class RandomScalpBot:
             if actual_qty != expected_qty:
                 log(f"[{STRATEGY_NAME}] [RECONCILE] State mismatch! Expected: {expected_qty}, Actual: {actual_qty}")
 
-                # If we think we're flat but have a position
+                # If we think we're flat but broker shows a position, adopt it
                 if not self.in_position and actual_qty != 0:
-                    log(f"[{STRATEGY_NAME}] [RECONCILE] Unexpected position detected, flattening...")
-                    self._ensure_flat_position("reconcile_unexpected_position")
+                    log(f"[{STRATEGY_NAME}] [RECONCILE] Unexpected position detected, adopting broker state")
+                    self.in_position = True
+                    self.side = 'LONG' if actual_qty > 0 else 'SHORT'
+                    self.actual_filled_qty = abs(actual_qty)
+                    self.pending_signal = False
+                    self.exit_legs_placed = False
+                    self.exit_legs_retry_count = 0
+                    self.entry_order_id = None
+                    if actual_avg_price and actual_avg_price > 0:
+                        self.entry_price = actual_avg_price
+                    if not self.entry_price:
+                        log(f"[{STRATEGY_NAME}] [RECONCILE] Entry price unavailable while adopting position")
+                    else:
+                        self.tp_level = self._round_to_tick(self.entry_price + self.cfg.profit_target_rupees)
+                        self.sl_level = self._round_to_tick(self.entry_price - self.cfg.stop_loss_rupees)
+                        self.highest_favorable_price = self.entry_price
+                        self.sl_trail_active = False
+                        self.original_sl_level = self.sl_level
+                    self._persist()
+                    self._ensure_exits()
 
                 # If we think we're in position but we're actually flat
                 elif self.in_position and actual_qty == 0:
