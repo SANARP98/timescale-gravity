@@ -149,11 +149,11 @@ TICK_SIZE_FALLBACKS = {
 class Config:
     # API
     api_key: str = os.getenv("OPENALGO_API_KEY", "")
-    api_host: str = os.getenv("OPENALGO_API_HOST", "http://127.0.0.1:5000")
-    ws_url: Optional[str] = os.getenv("OPENALGO_WS_URL", "ws://127.0.0.1:8765")
+    api_host: str = os.getenv("OPENALGO_API_HOST", "http://localhost:5001")
+    ws_url: Optional[str] = os.getenv("OPENALGO_WS_URL", "ws://localhost:8765")
 
     # Instrument
-    symbol: str = os.getenv("SYMBOL", "NIFTY24OCT2525000CE")  # Use an actual tradable symbol
+    symbol: str = os.getenv("SYMBOL", "NIFTY28OCT2525000CE")  # Use an actual tradable symbol
     exchange: str = os.getenv("EXCHANGE", "NFO")               # e.g., NSE, NFO, BSE, MCX
     product: str = os.getenv("PRODUCT", "MIS")                  # MIS / CNC / NRML
     lots: int = int(os.getenv("LOTS", 1))                       # multiplier over lotsize
@@ -474,7 +474,19 @@ class RandomScalpBot:
 
     @staticmethod
     def _is_complete(resp: Dict[str, Any]) -> bool:
-        return str(resp.get('data', {}).get('order_status', '')).upper() == 'COMPLETE'
+        data = resp.get('data', {}) or {}
+        status = str(data.get('order_status', '')).upper()
+        if status in {'COMPLETE', 'COMPLETED', 'FILLED', 'EXECUTED', 'TRADED'}:
+            return True
+
+        filled = data.get('filled_quantity') or data.get('filled_qty') or data.get('filledQuantity')
+        total = data.get('quantity') or data.get('order_quantity') or data.get('qty')
+        try:
+            filled = int(filled or 0)
+            total = int(total or 0)
+        except (TypeError, ValueError):
+            return False
+        return total > 0 and filled >= total
 
     @staticmethod
     def _is_rejected(resp: Dict[str, Any]) -> bool:
@@ -483,8 +495,19 @@ class RandomScalpBot:
 
     @staticmethod
     def _is_partial(resp: Dict[str, Any]) -> bool:
-        status = str(resp.get('data', {}).get('order_status', '')).upper()
-        return 'PARTIAL' in status or status == 'OPEN'
+        data = resp.get('data', {}) or {}
+        status = str(data.get('order_status', '')).upper()
+        if status in {'PARTIAL', 'PARTIALLY FILLED', 'PARTLY FILLED', 'OPEN'}:
+            return True
+
+        filled = data.get('filled_quantity') or data.get('filled_qty') or data.get('filledQuantity')
+        total = data.get('quantity') or data.get('order_quantity') or data.get('qty')
+        try:
+            filled = int(filled or 0)
+            total = int(total or 0)
+        except (TypeError, ValueError):
+            return False
+        return 0 < filled < total
 
     @staticmethod
     def _get_filled_qty(resp: Dict[str, Any]) -> int:

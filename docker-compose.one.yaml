@@ -159,10 +159,10 @@ services:
 
       # Trading Configuration
       SYMBOL: ${SYMBOL:-NIFTY}
-      EXCHANGE: ${EXCHANGE:-NSE_INDEX}
-      PRODUCT: ${PRODUCT:-MIS}
-      LOTS: ${LOTS:-2}
-      TRADE_DIRECTION: ${TRADE_DIRECTION:-both}
+      EXCHANGE: ${EXCHANGE:-NFO}
+      PRODUCT: ${PRODUCT:-NRML}
+      LOTS: ${LOTS:-1}
+      TRADE_DIRECTION: ${TRADE_DIRECTION:-long_only}
 
       # Strategy Parameters
       INTERVAL: ${INTERVAL:-5m}
