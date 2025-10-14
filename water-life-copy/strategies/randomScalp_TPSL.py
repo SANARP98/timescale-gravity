@@ -421,6 +421,22 @@ class RandomScalpBot:
         rounded = round(round(price / tick) * tick, 2)
         return rounded
 
+    def _broker_position_snapshot(self) -> Tuple[int, Optional[float]]:
+        if not hasattr(self.client, "positionbook"):
+            return 0, None
+        try:
+            resp = self.client.positionbook()
+            if resp.get("status") != "success":
+                return 0, None
+            for pos in resp.get("data") or []:
+                if str(pos.get("symbol", "")).upper() == (self.cfg.symbol or "").upper():
+                    qty = int(pos.get("netqty") or pos.get("net_qty") or pos.get("quantity") or 0)
+                    avg = float(pos.get("average_price") or pos.get("avg_price") or 0)
+                    return qty, avg if qty else (0, None)
+        except Exception as exc:
+            log(f"[{STRATEGY_NAME}] [WARN] positionbook snapshot failed: {exc}")
+        return 0, None
+
     # ---- Bar close: set signal every N bars
     def on_bar_close(self):
         now = now_ist()
