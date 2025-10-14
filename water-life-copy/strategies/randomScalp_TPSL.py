@@ -1336,7 +1336,7 @@ class RandomScalpBot:
                     except Exception:
                         exit_price = self.entry_price or 0
 
-                    self._realize_exit(exit_price, reason="EOD Square-Off")
+                self._realize_exit(exit_price, reason="EOD Square-Off")
             else:
                 log(f"[{STRATEGY_NAME}] [EOD] close failed: {resp}")
         except Exception as e:
