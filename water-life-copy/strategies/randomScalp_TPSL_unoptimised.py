@@ -24,7 +24,7 @@ import os, sys, time, json, logging, signal, threading
 from dataclasses import dataclass, asdict
 from typing import Optional, Tuple, Dict, Any
 from datetime import datetime, time as dtime, timedelta
-from threading import Lock, RLock
+from threading import Lock
 
 import pytz
 import pandas as pd
@@ -391,9 +391,6 @@ class RandomScalpBot:
         # Threading safety
         self.exit_lock = Lock()  # OCO race condition protection
 
-        # Serialize broker writes (orders/cancels)
-        self.order_lock = RLock()
-
         self.last_entry_order_id: Optional[str] = None
 
         # Trailing Stop Loss state
@@ -541,26 +538,25 @@ class RandomScalpBot:
         max_attempts = min(self.cfg.max_order_retries, 3)
         last_error = None
 
-        with self.order_lock:
-            for attempt in range(max_attempts):
-                try:
-                    resp = self.client.placeorder(**params)
-                    if resp.get('status') == 'success':
-                        return resp
-                    else:
-                        log(f"[{STRATEGY_NAME}] [WARN] placeorder attempt {attempt+1}/{max_attempts} failed: {resp.get('message', resp)}")
-                        last_error = resp
-                except Exception as e:
-                    log(f"[{STRATEGY_NAME}] [WARN] placeorder attempt {attempt+1}/{max_attempts} exception: {e}")
-                    last_error = str(e)
-                    # On timeout or network error, check if order actually went through
-                    if attempt < max_attempts - 1 and 'timeout' in str(e).lower():
-                        time.sleep(0.3 * (attempt + 1))
-                        continue
-
-                # Wait before retry
-                if attempt < max_attempts - 1:
+        for attempt in range(max_attempts):
+            try:
+                resp = self.client.placeorder(**params)
+                if resp.get('status') == 'success':
+                    return resp
+                else:
+                    log(f"[{STRATEGY_NAME}] [WARN] placeorder attempt {attempt+1}/{max_attempts} failed: {resp.get('message', resp)}")
+                    last_error = resp
+            except Exception as e:
+                log(f"[{STRATEGY_NAME}] [WARN] placeorder attempt {attempt+1}/{max_attempts} exception: {e}")
+                last_error = str(e)
+                # On timeout or network error, check if order actually went through
+                if attempt < max_attempts - 1 and 'timeout' in str(e).lower():
                     time.sleep(0.3 * (attempt + 1))
+                    continue
+
+            # Wait before retry
+            if attempt < max_attempts - 1:
+                time.sleep(0.3 * (attempt + 1))
 
         log(f"[{STRATEGY_NAME}] [ERROR] placeorder failed after {max_attempts} attempts: {last_error}")
         return None
@@ -645,45 +641,44 @@ class RandomScalpBot:
             self.sl_order_id = None
             return
 
-        with self.order_lock:
-            log(f"[{STRATEGY_NAME}] [SYNC] Adjusting exits for remaining qty {remaining_qty}")
+        log(f"[{STRATEGY_NAME}] [SYNC] Adjusting exits for remaining qty {remaining_qty}")
 
-            # Cancel existing exits
-            self.cancel_order_silent(self.tp_order_id)
-            self.cancel_order_silent(self.sl_order_id)
-            self.tp_order_id = None
-            self.sl_order_id = None
+        # Cancel existing exits
+        self.cancel_order_silent(self.tp_order_id)
+        self.cancel_order_silent(self.sl_order_id)
+        self.tp_order_id = None
+        self.sl_order_id = None
 
-            # Re-place with correct quantity
-            if not self.entry_price or not self.tp_level or not self.sl_level:
-                log(f"[{STRATEGY_NAME}] [ERROR] Cannot re-place exits: missing price levels")
-                return
+        # Re-place with correct quantity
+        if not self.entry_price or not self.tp_level or not self.sl_level:
+            log(f"[{STRATEGY_NAME}] [ERROR] Cannot re-place exits: missing price levels")
+            return
 
-            # Place TP
-            try:
-                tp_resp = self._safe_placeorder(
-                    strategy=STRATEGY_NAME,
-                    symbol=self.cfg.symbol,
-                    exchange=self.cfg.exchange,
-                    product=self.cfg.product,
-                    action="SELL",
-                    price_type="LIMIT",
-                    price=self.tp_level,
-                    quantity=remaining_qty,
-                )
-                if tp_resp and tp_resp.get('status') == 'success':
-                    self.tp_order_id = tp_resp.get('orderid')
-                    log(f"[{STRATEGY_NAME}] [SYNC] Re-placed TP for qty {remaining_qty}")
-            except Exception as e:
-                log(f"[{STRATEGY_NAME}] [ERROR] Failed to re-place TP: {e}")
+        # Place TP
+        try:
+            tp_resp = self._safe_placeorder(
+                strategy=STRATEGY_NAME,
+                symbol=self.cfg.symbol,
+                exchange=self.cfg.exchange,
+                product=self.cfg.product,
+                action="SELL",
+                price_type="LIMIT",
+                price=self.tp_level,
+                quantity=remaining_qty,
+            )
+            if tp_resp and tp_resp.get('status') == 'success':
+                self.tp_order_id = tp_resp.get('orderid')
+                log(f"[{STRATEGY_NAME}] [SYNC] Re-placed TP for qty {remaining_qty}")
+        except Exception as e:
+            log(f"[{STRATEGY_NAME}] [ERROR] Failed to re-place TP: {e}")
 
-            # Place SL
-            sl_resp = self._place_stop_order(remaining_qty, self.sl_level, action="SELL")
-            if sl_resp and sl_resp.get('status') == 'success':
-                self.sl_order_id = sl_resp.get('orderid')
-                log(f"[{STRATEGY_NAME}] [SYNC] Re-placed SL for qty {remaining_qty}")
+        # Place SL
+        sl_resp = self._place_stop_order(remaining_qty, self.sl_level, action="SELL")
+        if sl_resp and sl_resp.get('status') == 'success':
+            self.sl_order_id = sl_resp.get('orderid')
+            log(f"[{STRATEGY_NAME}] [SYNC] Re-placed SL for qty {remaining_qty}")
 
-            self._persist()
+        self._persist()
 
     def _cleanup_stale_orders(self) -> None:
         """Clean up stale exit orders when flat."""
@@ -769,7 +764,7 @@ class RandomScalpBot:
         if self.base_lot_size > 0 and corrective_qty % self.base_lot_size != 0:
             corrective_qty = ((corrective_qty // self.base_lot_size) + 1) * self.base_lot_size
         try:
-            resp = self._safe_placeorder(
+            self.client.placeorder(
                 strategy=STRATEGY_NAME,
                 symbol=self.cfg.symbol,
                 exchange=self.cfg.exchange,
@@ -778,10 +773,7 @@ class RandomScalpBot:
                 price_type="MARKET",
                 quantity=corrective_qty,
             )
-            if resp and resp.get('status') == 'success':
-                log(f"[{STRATEGY_NAME}] [WARN] Corrective {corrective_action} {corrective_qty} order submitted to flatten residual position")
-            else:
-                log(f"[{STRATEGY_NAME}] [ERROR] Corrective flatten placement failed: {resp}")
+            log(f"[{STRATEGY_NAME}] [WARN] Corrective {corrective_action} {corrective_qty} order submitted to flatten residual position")
         except Exception as e:
             log(f"[{STRATEGY_NAME}] [ERROR] Corrective flatten failed: {e}")
 
@@ -1213,59 +1205,57 @@ class RandomScalpBot:
             self.tp_level = self._round_to_tick(self.entry_price + self.cfg.profit_target_rupees)
             self.sl_level = self._round_to_tick(self.entry_price - self.cfg.stop_loss_rupees)
 
-        with self.order_lock:
+        try:
+            self.exit_legs_retry_count += 1
+            tp_success = False
+            sl_success = False
+
+            # TP (SELL LIMIT)
             try:
-                self.exit_legs_retry_count += 1
-                tp_success = False
-                sl_success = False
-
-                # TP (SELL LIMIT)
-                try:
-                    tp = self._safe_placeorder(
-                        strategy=STRATEGY_NAME,
-                        symbol=self.cfg.symbol,
-                        exchange=self.cfg.exchange,
-                        product=self.cfg.product,
-                        action="SELL",
-                        price_type="LIMIT",
-                        price=self.tp_level,
-                        quantity=quantity,
-                    )
-                    if tp and tp.get('status') == 'success':
-                        self.tp_order_id = tp.get('orderid')
-                        tp_success = True
-                    else:
-                        log(f"[{STRATEGY_NAME}] [ERROR] TP order failed: {tp}")
-                except Exception as e:
-                    log(f"[{STRATEGY_NAME}] [ERROR] TP order exception: {e}")
-
-                # SL (SELL SL-M by default, with smart fallback)
-                sl = self._place_stop_order(quantity, self.sl_level, action="SELL")
-                if sl and sl.get('status') == 'success':
-                    self.sl_order_id = sl.get('orderid')
-                    sl_success = True
+                tp = self._safe_placeorder(
+                    strategy=STRATEGY_NAME,
+                    symbol=self.cfg.symbol,
+                    exchange=self.cfg.exchange,
+                    product=self.cfg.product,
+                    action="SELL",
+                    price_type="LIMIT",
+                    price=self.tp_level,
+                    quantity=quantity,
+                )
+                if tp and tp.get('status') == 'success':
+                    self.tp_order_id = tp.get('orderid')
+                    tp_success = True
                 else:
-                    log(f"[{STRATEGY_NAME}] [ERROR] SL order failed completely")
-
-                # Mark exit legs as successfully placed if both succeeded
-                if tp_success and sl_success:
-                    self.exit_legs_placed = True
-                    self.exit_legs_retry_count = 0  # Reset counter
-                    log(f"[{STRATEGY_NAME}] [EXITS] TP oid={self.tp_order_id} @₹{self.tp_level:.2f} | SL oid={self.sl_order_id} @₹{self.sl_level:.2f} for qty {quantity}")
-                    self._persist()
-                else:
-                    log(f"[{STRATEGY_NAME}] [WARN] Exit legs placement incomplete (TP={tp_success}, SL={sl_success})")
-                    if self.exit_legs_retry_count >= self.max_exit_legs_retries:
-                        log(f"[{STRATEGY_NAME}] [CRITICAL] Max exit legs retries reached - position is UNPROTECTED!")
+                    log(f"[{STRATEGY_NAME}] [ERROR] TP order failed: {tp}")
             except Exception as e:
-                log(f"[{STRATEGY_NAME}] [ERROR] place_exit_legs_for_qty: {e}")
+                log(f"[{STRATEGY_NAME}] [ERROR] TP order exception: {e}")
+
+            # SL (SELL SL-M by default, with smart fallback)
+            sl = self._place_stop_order(quantity, self.sl_level, action="SELL")
+            if sl and sl.get('status') == 'success':
+                self.sl_order_id = sl.get('orderid')
+                sl_success = True
+            else:
+                log(f"[{STRATEGY_NAME}] [ERROR] SL order failed completely")
+
+            # Mark exit legs as successfully placed if both succeeded
+            if tp_success and sl_success:
+                self.exit_legs_placed = True
+                self.exit_legs_retry_count = 0  # Reset counter
+                log(f"[{STRATEGY_NAME}] [EXITS] TP oid={self.tp_order_id} @₹{self.tp_level:.2f} | SL oid={self.sl_order_id} @₹{self.sl_level:.2f} for qty {quantity}")
+                self._persist()
+            else:
+                log(f"[{STRATEGY_NAME}] [WARN] Exit legs placement incomplete (TP={tp_success}, SL={sl_success})")
+                if self.exit_legs_retry_count >= self.max_exit_legs_retries:
+                    log(f"[{STRATEGY_NAME}] [CRITICAL] Max exit legs retries reached - position is UNPROTECTED!")
+        except Exception as e:
+            log(f"[{STRATEGY_NAME}] [ERROR] place_exit_legs_for_qty: {e}")
 
     def cancel_order_silent(self, oid: Optional[str]):
         if not oid:
             return
         try:
-            with self.order_lock:
-                self.client.cancelorder(order_id=oid, strategy=STRATEGY_NAME)
+            self.client.cancelorder(order_id=oid, strategy=STRATEGY_NAME)
             log(f"[{STRATEGY_NAME}] [CANCEL] order_id={oid}")
         except Exception as e:
             log(f"[{STRATEGY_NAME}] [WARN] cancel failed: {e}")
@@ -1307,7 +1297,7 @@ class RandomScalpBot:
 
             # Place market order to close
             log(f"[{STRATEGY_NAME}] [EOD] Squaring off position")
-            resp = self._safe_placeorder(
+            resp = self.client.placeorder(
                 strategy=STRATEGY_NAME,
                 symbol=self.cfg.symbol,
                 exchange=self.cfg.exchange,
@@ -1316,7 +1306,7 @@ class RandomScalpBot:
                 price_type="MARKET",
                 quantity=self.qty,
             )
-            if resp and resp.get('status') == 'success':
+            if resp.get('status') == 'success':
                 # Wait and fetch actual exit price
                 time.sleep(0.5)
                 exit_price = None
@@ -1336,7 +1326,7 @@ class RandomScalpBot:
                     except Exception:
                         exit_price = self.entry_price or 0
 
-                    self._realize_exit(exit_price, reason="EOD Square-Off")
+                self._realize_exit(exit_price, reason="EOD Square-Off")
             else:
                 log(f"[{STRATEGY_NAME}] [EOD] close failed: {resp}")
         except Exception as e:
