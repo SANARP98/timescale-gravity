@@ -697,6 +697,19 @@ class RandomScalpBot:
         if not self.in_position:
             return
 
+        # Broker state sanity check
+        actual_qty, avg = self._broker_position_snapshot()
+        if actual_qty == 0:
+            log(f"[{STRATEGY_NAME}] [INFO] Broker already flat; skipping exit re-arm.")
+            self._flat_state()
+            self._persist()
+            return
+        if actual_qty < 0:
+            # Optional: send corrective BUY to balance, or call _ensure_flat_position(...)
+            log(f"[{STRATEGY_NAME}] [WARN] Broker shows short position {actual_qty} while bot is long. Flattening...")
+            self._ensure_flat_position("ensure_exits_short_mismatch")
+            return
+
         if self.tp_order_id and self.sl_order_id:
             return  # Exits already in place
 
@@ -714,8 +727,9 @@ class RandomScalpBot:
             self.sl_level = self._round_to_tick(self.entry_price - self.cfg.stop_loss_rupees)
 
         # Place exit legs
-        qty_to_protect = self.actual_filled_qty if self.actual_filled_qty > 0 else self.qty
-        self.place_exit_legs_for_qty(qty_to_protect)
+        self.actual_filled_qty = abs(actual_qty)
+        quantity = min(self.actual_filled_qty, abs(actual_qty))
+        self.place_exit_legs_for_qty(quantity)
 
     def _ensure_flat_position(self, context: str) -> None:
         """Verify broker position book is flat; attempt corrective order if not."""
@@ -1066,6 +1080,13 @@ class RandomScalpBot:
 
     def place_entry(self, side: str = "LONG"):
         try:
+            # Increase reconciliation frequency when attempting entry
+            try:
+                self.scheduler.reschedule_job('reconcile_job', trigger='interval', seconds=30)
+                log(f"[{STRATEGY_NAME}] [INFO] Attempting entry. Reconciliation frequency increased to 30 seconds.")
+            except Exception as e:
+                log(f"[{STRATEGY_NAME}] [WARN] Could not reschedule reconciliation job for entry: {e}")
+
             if self.in_position:
                 return
             action = "BUY" if side == "LONG" else "SELL"
@@ -1436,6 +1457,12 @@ class RandomScalpBot:
         self.highest_favorable_price = None
         self.sl_trail_active = False
         self.original_sl_level = None
+        # Reduce reconciliation frequency when flat
+        try:
+            self.scheduler.reschedule_job('reconcile_job', trigger='interval', seconds=300)
+            log(f"[{STRATEGY_NAME}] [INFO] Bot is flat. Reconciliation frequency reduced to 5 minutes.")
+        except Exception as e:
+            log(f"[{STRATEGY_NAME}] [WARN] Could not reschedule reconciliation job: {e}")
 
     # ---- Lifecycle
     def start(self):
@@ -1480,7 +1507,7 @@ class RandomScalpBot:
         self.scheduler.add_job(self.check_order_status, 'interval', seconds=5, max_instances=2)
 
         # Position reconciliation (every 30 seconds)
-        self.scheduler.add_job(self.reconcile_position, 'interval', seconds=30, max_instances=1)
+        self.scheduler.add_job(self.reconcile_position, 'interval', seconds=30, id='reconcile_job', max_instances=1)
 
         # Graceful shutdown
         if threading.current_thread() is threading.main_thread():
