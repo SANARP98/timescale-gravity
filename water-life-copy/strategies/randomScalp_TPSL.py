@@ -41,14 +41,13 @@ STRATEGY_NAME = "random_scalp_live"
 
 # ==================== Strategy Metadata ====================
 STRATEGY_METADATA = {
-    "name": "Random Scalp with Trend (Live)",
-    "description": "Production-hardened trend-aware scalp bot with EMA crossover and ATR filters to reduce stop loss hits.",
+    "name": "Random Scalp with Trailing SL (Live)",
+    "description": "Production-hardened long-only random scalp bot with intelligent trailing stop loss, partial fill handling, and enhanced safety rails.",
     "version": "2.0",
     "features": [
-        "EMA-based trend detection (fast/slow crossover)",
-        "ATR volatility filter to avoid choppy markets",
-        "Price action confirmation (higher high for entries)",
-        "Fixed-interval long entries with trend confirmation",
+        "Fixed-interval long entries",
+        "Intelligent trailing stop loss (locks in profits as price moves)",
+        "Configurable trail activation and lock percentages",
         "Static rupee profit target and stop loss",
         "Partial fill handling on entry and exits with quantity sync",
         "SL-M trigger validation with automatic SL fallback",
@@ -59,11 +58,10 @@ STRATEGY_METADATA = {
         "Enhanced graceful shutdown with escalation protocol",
         "Market-on-target conversion for gap scenarios",
         "Intraday square-off with APScheduler",
-        "TimescaleDB-aware history fetching with smart caching",
         "OpenAlgo order execution with quote validation"
     ],
     "has_trade_direction": False,
-    "author": "Random Scalp with Trend"
+    "author": "Random Scalp with Trailing SL"
 }
 
 CONFIG_FIELD_ORDER = [
@@ -75,13 +73,11 @@ CONFIG_FIELD_ORDER = [
     "lots",
     "interval",
     "trade_every_n_bars",
-    "ema_fast",
-    "ema_slow",
-    "atr_window",
-    "atr_min_points",
-    "confirm_trend_at_entry",
     "profit_target_rupees",
     "stop_loss_rupees",
+    "enable_trailing_sl",
+    "trail_activation_percent",
+    "trail_lock_percent",
     "brokerage_per_trade",
     "slippage_rupees",
     "ignore_entry_delta",
@@ -90,7 +86,6 @@ CONFIG_FIELD_ORDER = [
     "test_mode",
     "log_to_file",
     "persist_state",
-    "warmup_days",
     "use_history",
     "history_start_date",
     "history_end_date",
@@ -98,20 +93,17 @@ CONFIG_FIELD_ORDER = [
 
 CONFIG_FIELD_DEFS = {
     "trade_every_n_bars": {"group": "Strategy Behaviour", "label": "Trade Every N Bars"},
-    "ema_fast": {"group": "Trend Filters", "label": "EMA Fast Period", "number_format": "int"},
-    "ema_slow": {"group": "Trend Filters", "label": "EMA Slow Period", "number_format": "int"},
-    "atr_window": {"group": "Trend Filters", "label": "ATR Window", "number_format": "int"},
-    "atr_min_points": {"group": "Trend Filters", "label": "ATR Min Points", "number_format": "float", "step": 0.1},
-    "confirm_trend_at_entry": {"group": "Trend Filters", "label": "Confirm Trend at Entry", "type": "boolean"},
     "profit_target_rupees": {"group": "Strategy Behaviour", "label": "Profit Target (₹)", "number_format": "float", "step": 0.5},
     "stop_loss_rupees": {"group": "Strategy Behaviour", "label": "Stop Loss (₹)", "number_format": "float", "step": 0.5},
+    "enable_trailing_sl": {"group": "Trailing Stop Loss", "label": "Enable Trailing SL", "type": "boolean"},
+    "trail_activation_percent": {"group": "Trailing Stop Loss", "label": "Trail Activation (% of Target)", "number_format": "float", "step": 1.0},
+    "trail_lock_percent": {"group": "Trailing Stop Loss", "label": "Trail Lock (% of Profit)", "number_format": "float", "step": 1.0},
     "brokerage_per_trade": {"group": "Costs", "label": "Brokerage per Trade (₹)", "number_format": "float", "step": 0.5},
     "slippage_rupees": {"group": "Costs", "label": "Slippage (₹)", "number_format": "float", "step": 0.5},
     "ignore_entry_delta": {"group": "Strategy Behaviour", "label": "Ignore Entry Timing Delta"},
     "test_mode": {"group": "Execution", "label": "Test Mode"},
     "log_to_file": {"group": "Execution", "label": "Log to File"},
     "persist_state": {"group": "Execution", "label": "Persist State"},
-    "warmup_days": {"group": "Backtest & History", "label": "Warmup Days", "number_format": "int"},
     "use_history": {"group": "Backtest & History", "label": "Use Historical Data"},
     "history_start_date": {"group": "Backtest & History", "label": "History Start Date", "placeholder": "YYYY-MM-DD"},
     "history_end_date": {"group": "Backtest & History", "label": "History End Date", "placeholder": "YYYY-MM-DD"},
@@ -179,13 +171,10 @@ class Config:
     brokerage_per_trade: float = float(os.getenv("BROKERAGE_PER_TRADE_RUPEES", 0.0))
     slippage_rupees: float = float(os.getenv("SLIPPAGE_RUPEES", 0.0))
 
-    # Trend filters (new)
-    ema_fast: int = int(os.getenv("EMA_FAST", 5))
-    ema_slow: int = int(os.getenv("EMA_SLOW", 20))
-    atr_window: int = int(os.getenv("ATR_WINDOW", 14))
-    atr_min_points: float = float(os.getenv("ATR_MIN_POINTS", 2.0))
-    confirm_trend_at_entry: bool = os.getenv("CONFIRM_TREND_AT_ENTRY", "true").lower() == "true"
-    warmup_days: int = int(os.getenv("WARMUP_DAYS", 5))
+    # Trailing Stop Loss (new)
+    enable_trailing_sl: bool = os.getenv("ENABLE_TRAILING_SL", "false").lower() == "true"
+    trail_activation_percent: float = float(os.getenv("TRAIL_ACTIVATION_PERCENT", 50.0))  # % of target
+    trail_lock_percent: float = float(os.getenv("TRAIL_LOCK_PERCENT", 75.0))  # % of profit to lock
 
     # Risk & timing
     ignore_entry_delta: bool = os.getenv("IGNORE_ENTRY_DELTA", "true").lower() == "true"
@@ -350,37 +339,7 @@ def get_history(client, cfg: Config, symbol: Optional[str] = None) -> pd.DataFra
 
     # Data is already in correct format from get_history_smart
     log(f"[{STRATEGY_NAME}] [HISTORY] Retrieved {len(df)} bars")
-    return df
-
-def compute_indicators(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
-    """
-    Compute technical indicators (EMA, ATR) using openalgo.ta.
-    Returns a copy of the dataframe with indicator columns added.
-    """
-    if df.empty:
-        return df
-
-    out = df.copy()
-
-    # Compute EMAs
-    try:
-        out["ema_fast"] = openalgo.ta.ema(out["close"].values, cfg.ema_fast)
-        out["ema_slow"] = openalgo.ta.ema(out["close"].values, cfg.ema_slow)
-        log(f"[{STRATEGY_NAME}] [INDICATORS] Computed EMAs (fast={cfg.ema_fast}, slow={cfg.ema_slow})")
-    except Exception as e:
-        log(f"[{STRATEGY_NAME}] [ERROR] Failed to compute EMAs: {e}")
-        out["ema_fast"] = 0.0
-        out["ema_slow"] = 0.0
-
-    # Compute ATR
-    try:
-        out["atr"] = openalgo.ta.atr(out["high"].values, out["low"].values, out["close"].values, cfg.atr_window)
-        log(f"[{STRATEGY_NAME}] [INDICATORS] Computed ATR (window={cfg.atr_window})")
-    except Exception as e:
-        log(f"[{STRATEGY_NAME}] [ERROR] Failed to compute ATR: {e}")
-        out["atr"] = 0.0
-
-    return out
+    return df    
 
 # ----------------------------
 # Trading Engine
@@ -429,13 +388,13 @@ class RandomScalpBot:
         # Threading safety
         self.exit_lock = Lock()  # OCO race condition protection
 
+        # Trailing Stop Loss state
+        self.highest_favorable_price: Optional[float] = None  # Track peak price for trailing
+        self.sl_trail_active: bool = False  # Flag: is trailing active?
+        self.original_sl_level: Optional[float] = None  # Store original SL for reference
+
         self.realized_pnl_today: float = 0.0
         self.running: bool = False  # Control flag for main loop
-
-        # Live data buffer and historical data for indicators
-        self.live_df: pd.DataFrame = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
-        self.historical_df: pd.DataFrame = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
-        self.indicators_ready: bool = False
 
     # ---- Time helpers
     def _parse_interval_minutes(self, interval: str) -> int:
@@ -457,116 +416,6 @@ class RandomScalpBot:
         rounded = round(round(price / tick) * tick, 2)
         return rounded
 
-    # ---- Trend detection helpers
-    def _load_warmup_history(self):
-        """Load historical data for indicator warmup on startup."""
-        if not self.cfg.confirm_trend_at_entry:
-            log(f"[{STRATEGY_NAME}] [WARMUP] Trend filtering disabled, skipping warmup")
-            self.indicators_ready = True
-            return
-
-        try:
-            log(f"[{STRATEGY_NAME}] [WARMUP] Loading {self.cfg.warmup_days} days of history for indicators...")
-            now = now_ist()
-            start_date = (now.date() - timedelta(days=self.cfg.warmup_days)).strftime('%Y-%m-%d')
-            end_date = (now.date() - timedelta(days=1)).strftime('%Y-%m-%d')
-
-            # Use existing get_history with smart DB caching
-            df = get_history_smart(
-                client=self.client,
-                symbol=self.cfg.symbol,
-                exchange=self.cfg.exchange,
-                interval=self.cfg.interval.upper(),
-                start_date=start_date,
-                end_date=end_date
-            )
-
-            if df.empty:
-                log(f"[{STRATEGY_NAME}] [WARMUP] No historical data available")
-                self.indicators_ready = False
-                return
-
-            # Compute indicators
-            self.historical_df = compute_indicators(df, self.cfg)
-            self.indicators_ready = True
-            log(f"[{STRATEGY_NAME}] [WARMUP] ✅ Loaded {len(self.historical_df)} bars with indicators")
-
-        except Exception as e:
-            log(f"[{STRATEGY_NAME}] [ERROR] Warmup history load failed: {e}")
-            self.indicators_ready = False
-
-    def _update_live_data(self):
-        """Fetch latest quote and build current bar data."""
-        try:
-            q = self.client.quotes(symbol=self.cfg.symbol, exchange=self.cfg.exchange)
-            if q.get('status') != 'success':
-                return None
-
-            data = q.get('data', {})
-            ltp = float(data.get('ltp', 0))
-            if not ltp:
-                return None
-
-            # For live tracking, we just use the quote data
-            # In a real scenario, you'd build OHLC bars from ticks
-            # For now, we'll use the quote as a proxy
-            return {
-                'timestamp': now_ist(),
-                'open': ltp,  # Simplified - would need real bar open
-                'high': ltp,
-                'low': ltp,
-                'close': ltp,
-                'volume': 0
-            }
-        except Exception as e:
-            log(f"[{STRATEGY_NAME}] [ERROR] Failed to update live data: {e}")
-            return None
-
-    def _get_combined_df(self) -> pd.DataFrame:
-        """Combine historical and live data with indicators computed."""
-        if self.historical_df.empty and self.live_df.empty:
-            return pd.DataFrame()
-
-        if self.live_df.empty:
-            return self.historical_df
-
-        # Merge historical and live data
-        combined = pd.concat([self.historical_df, self.live_df], ignore_index=True)
-        combined = combined.drop_duplicates(subset=['timestamp'], keep='last')
-        combined = combined.sort_values('timestamp').reset_index(drop=True)
-
-        # Keep only recent bars (max needed for indicators + buffer)
-        max_bars = max(self.cfg.ema_slow, self.cfg.atr_window) + 50
-        if len(combined) > max_bars:
-            combined = combined.tail(max_bars).reset_index(drop=True)
-
-        # Recompute indicators on combined data
-        combined = compute_indicators(combined, self.cfg)
-
-        return combined
-
-    def _trend_up(self, df: pd.DataFrame, i: int) -> bool:
-        """Check if trend is up at bar i."""
-        if i < 0 or i >= len(df):
-            return False
-        if "ema_fast" not in df.columns or "ema_slow" not in df.columns:
-            return False
-        return float(df.iloc[i]["ema_fast"]) > float(df.iloc[i]["ema_slow"])
-
-    def _atr_ok(self, df: pd.DataFrame, i: int) -> bool:
-        """Check if ATR is above minimum threshold at bar i."""
-        if i < 0 or i >= len(df):
-            return False
-        if "atr" not in df.columns:
-            return False
-        return float(df.iloc[i]["atr"]) >= self.cfg.atr_min_points
-
-    def _price_action_bullish(self, df: pd.DataFrame, i: int) -> bool:
-        """Check if current bar high > previous bar high (bullish momentum)."""
-        if i < 1 or i >= len(df):
-            return False
-        return float(df.iloc[i]["high"]) > float(df.iloc[i-1]["high"])
-
     # ---- Bar close: set signal every N bars
     def on_bar_close(self):
         now = now_ist()
@@ -575,16 +424,6 @@ class RandomScalpBot:
             return
         self.bar_counter += 1
         log(f"[{STRATEGY_NAME}] [BAR_CLOSE] bar={self.bar_counter}")
-
-        # Update live data and get combined dataframe with indicators
-        live_bar = self._update_live_data()
-        if live_bar:
-            # Append to live_df
-            self.live_df = pd.concat([self.live_df, pd.DataFrame([live_bar])], ignore_index=True)
-            # Keep only recent bars
-            max_bars = max(self.cfg.ema_slow, self.cfg.atr_window) + 50
-            if len(self.live_df) > max_bars:
-                self.live_df = self.live_df.tail(max_bars).reset_index(drop=True)
 
         # Print current quote/LTP
         try:
@@ -596,13 +435,10 @@ class RandomScalpBot:
         except Exception as e:
             log(f"[{STRATEGY_NAME}] [WARN] quotes failed: {e}")
 
-        # Check if it's time to consider a signal
         if self.bar_counter % max(self.cfg.trade_every_n_bars, 1) == 0:
             if self.in_position:
                 log(f"[{STRATEGY_NAME}] [NO_SIGNAL] in position, skip queuing")
                 return
-
-            # Check square-off time
             iv = self._parse_interval_minutes(self.cfg.interval)
             next_time = (now + timedelta(minutes=iv)).replace(second=1, microsecond=0)
             so_h, so_m = self.cfg.square_off_time
@@ -610,50 +446,11 @@ class RandomScalpBot:
             if next_time >= square_off_dt:
                 log(f"[{STRATEGY_NAME}] [NO_SIGNAL] next entry {next_time.time()} >= square-off; skipping")
                 return
-
-            # Apply trend filters if enabled
-            if self.cfg.confirm_trend_at_entry:
-                if not self.indicators_ready:
-                    log(f"[{STRATEGY_NAME}] [NO_SIGNAL] Indicators not ready yet, skipping")
-                    return
-
-                # Get combined dataframe with indicators
-                df = self._get_combined_df()
-                if df.empty or len(df) < 2:
-                    log(f"[{STRATEGY_NAME}] [NO_SIGNAL] Insufficient data for indicators ({len(df)} bars)")
-                    return
-
-                i = len(df) - 1  # Current bar index
-
-                # Log indicator values
-                cur = df.iloc[i]
-                if "ema_fast" in df.columns and "ema_slow" in df.columns and "atr" in df.columns:
-                    log(f"[{STRATEGY_NAME}] [INDICATORS] EMA_Fast:{cur['ema_fast']:.2f} EMA_Slow:{cur['ema_slow']:.2f} ATR:{cur['atr']:.2f}")
-
-                # Check ATR filter
-                if not self._atr_ok(df, i):
-                    log(f"[{STRATEGY_NAME}] [NO_SIGNAL] ATR too low ({cur.get('atr', 0):.2f} < {self.cfg.atr_min_points})")
-                    return
-
-                # Check trend filter
-                if not self._trend_up(df, i):
-                    log(f"[{STRATEGY_NAME}] [NO_SIGNAL] Trend not up (EMA_Fast:{cur.get('ema_fast', 0):.2f} <= EMA_Slow:{cur.get('ema_slow', 0):.2f})")
-                    return
-
-                # Check price action
-                if not self._price_action_bullish(df, i):
-                    prev = df.iloc[i-1]
-                    log(f"[{STRATEGY_NAME}] [NO_SIGNAL] Price action not bullish (High:{cur.get('high', 0):.2f} <= Prev_High:{prev.get('high', 0):.2f})")
-                    return
-
-                log(f"[{STRATEGY_NAME}] ✅ [FILTERS] All trend filters passed!")
-
-            # All checks passed - queue signal
             self.pending_signal = True
             self.next_entry_time = next_time
             log(f"[{STRATEGY_NAME}] ⚡ [SIGNAL] LONG queued for next bar open @ {self.next_entry_time}")
         else:
-            log(f"[{STRATEGY_NAME}] [NO_SIGNAL] waiting… (bar {self.bar_counter}/{self.cfg.trade_every_n_bars})")
+            log(f"[{STRATEGY_NAME}] [NO_SIGNAL] waiting…")
 
     # ---- Next bar open: place entry if a signal is pending
     def on_bar_open(self):
@@ -1050,6 +847,12 @@ class RandomScalpBot:
                     self._sync_exit_quantities(remaining_qty)
                     return  # Exit after sync to avoid processing stale data
 
+            # Update trailing stop (if enabled)
+            try:
+                self._update_trailing_stop()
+            except Exception as e:
+                log(f"[{STRATEGY_NAME}] [ERROR] Trailing SL update failed: {e}")
+
             # Process complete fills - handle both filled case
             if tp_complete and sl_complete:
                 log(f"[{STRATEGY_NAME}] [CRITICAL] Both TP and SL filled! OCO failure detected.")
@@ -1088,6 +891,70 @@ class RandomScalpBot:
                     log(f"[{STRATEGY_NAME}] [WARN] Market-on-target check failed: {e}")
         finally:
             self.exit_lock.release()
+
+    def _update_trailing_stop(self):
+        """
+        Intelligent trailing stop loss logic.
+        - Monitors current price vs entry
+        - Activates when profit reaches trail_activation_percent of target
+        - Trails SL to lock in trail_lock_percent of current profit
+        - Cancels old SL order and places new one (seamless OCO)
+        """
+        if not self.cfg.enable_trailing_sl or not self.in_position:
+            return
+
+        if self.side != 'LONG':  # Only LONG supported currently
+            return
+
+        # Get current LTP
+        try:
+            q = self.client.quotes(symbol=self.cfg.symbol, exchange=self.cfg.exchange)
+            ltp = float(q.get('data', {}).get('ltp', 0))
+            if not ltp:
+                return
+        except Exception as e:
+            log(f"[{STRATEGY_NAME}] [TRAIL] Failed to fetch LTP: {e}")
+            return
+
+        # Update highest favorable price
+        if self.highest_favorable_price is None or ltp > self.highest_favorable_price:
+            self.highest_favorable_price = ltp
+
+        current_profit = ltp - self.entry_price
+        target_range = self.cfg.profit_target_rupees
+        activation_threshold = target_range * (self.cfg.trail_activation_percent / 100.0)
+
+        # Check if trailing should activate
+        if not self.sl_trail_active and current_profit >= activation_threshold:
+            self.sl_trail_active = True
+            log(f"[{STRATEGY_NAME}] [TRAIL] ✅ ACTIVATED! Profit ₹{current_profit:.2f} >= ₹{activation_threshold:.2f}")
+
+        if not self.sl_trail_active:
+            return  # Not yet activated
+
+        # Calculate new trailing SL
+        locked_profit = self.highest_favorable_price - self.entry_price
+        trail_amount = locked_profit * (self.cfg.trail_lock_percent / 100.0)
+        new_sl = self._round_to_tick(self.entry_price + trail_amount)
+
+        # Only update if new SL is better (higher for LONG)
+        if new_sl > self.sl_level:
+            log(f"[{STRATEGY_NAME}] [TRAIL] 📈 Moving SL: ₹{self.sl_level:.2f} → ₹{new_sl:.2f} (locking ₹{trail_amount:.2f})")
+
+            # Cancel existing SL order
+            self.cancel_order_silent(self.sl_order_id)
+
+            # Place new SL order
+            remaining_qty = self.actual_filled_qty - self.tp_filled_qty - self.sl_filled_qty
+            if remaining_qty > 0:
+                sl_resp = self._place_stop_order(remaining_qty, new_sl, action="SELL")
+                if sl_resp and sl_resp.get('status') == 'success':
+                    self.sl_order_id = sl_resp.get('orderid')
+                    self.sl_level = new_sl
+                    self._persist()
+                    log(f"[{STRATEGY_NAME}] [TRAIL] ✅ New SL placed: oid={self.sl_order_id} @₹{new_sl:.2f}")
+                else:
+                    log(f"[{STRATEGY_NAME}] [TRAIL] ❌ Failed to place new SL order")
 
     def place_entry(self):
         try:
@@ -1152,6 +1019,11 @@ class RandomScalpBot:
             self.in_position = True
             self.side = 'LONG'
             self.pending_signal = False
+
+            # Reset trailing state for new position
+            self.highest_favorable_price = self.entry_price
+            self.sl_trail_active = False
+            self.original_sl_level = self.sl_level
 
             log(f"[{STRATEGY_NAME}] ✅ ENTRY avg ₹{self.entry_price:.2f} qty {self.actual_filled_qty} | TP ₹{self.tp_level:.2f} | SL ₹{self.sl_level:.2f}")
             log(f"[{STRATEGY_NAME}] STATE=LONG qty={self.actual_filled_qty} entry={self.entry_price:.2f} tp={self.tp_level:.2f} sl={self.sl_level:.2f}")
@@ -1325,6 +1197,10 @@ class RandomScalpBot:
         self.sl_order_id = state.get("sl_order_id")
         self.realized_pnl_today = state.get("realized_pnl_today", 0.0)
         self.pending_signal = False
+        # Load trailing state
+        self.highest_favorable_price = state.get("highest_favorable_price")
+        self.sl_trail_active = state.get("sl_trail_active", False)
+        self.original_sl_level = state.get("original_sl_level")
 
         if self.in_position:
             # Check both exit orders - handle case where both may have filled
@@ -1388,6 +1264,9 @@ class RandomScalpBot:
                     "tp_order_id": self.tp_order_id,
                     "sl_order_id": self.sl_order_id,
                     "realized_pnl_today": self.realized_pnl_today,
+                    "highest_favorable_price": self.highest_favorable_price,
+                    "sl_trail_active": self.sl_trail_active,
+                    "original_sl_level": self.original_sl_level,
                 }, f)
         except Exception as e:
             log(f"[{STRATEGY_NAME}] [WARN] persist failed: {e}")
@@ -1408,6 +1287,10 @@ class RandomScalpBot:
         self.next_entry_time = None
         self.exit_legs_placed = False
         self.exit_legs_retry_count = 0
+        # Reset trailing state
+        self.highest_favorable_price = None
+        self.sl_trail_active = False
+        self.original_sl_level = None
 
     # ---- Lifecycle
     def start(self):
@@ -1422,9 +1305,6 @@ class RandomScalpBot:
             sys.exit(1)
 
         self._load_state()
-
-        # Load warmup history for indicators
-        self._load_warmup_history()
 
         # Schedule bar close/open ticks
         interval_str = self.cfg.interval.strip().lower()
