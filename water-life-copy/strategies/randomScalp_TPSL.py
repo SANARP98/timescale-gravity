@@ -463,7 +463,7 @@ class RandomScalpBot:
             delta = (now - self.next_entry_time).total_seconds()
             if not self.cfg.ignore_entry_delta and not (0 <= delta <= 10):
                 return
-        self.place_entry()
+        self.place_entry("LONG")
 
     # ---- Orders
 
@@ -956,11 +956,11 @@ class RandomScalpBot:
                 else:
                     log(f"[{STRATEGY_NAME}] [TRAIL] ❌ Failed to place new SL order")
 
-    def place_entry(self):
+    def place_entry(self, side: str = "LONG"):
         try:
             if self.in_position:
                 return
-            action = "BUY"  # long-only to mirror backtest
+            action = "BUY" if side == "LONG" else "SELL"
             log(f"[{STRATEGY_NAME}] 🚀 [ENTRY] {action} {self.cfg.symbol} x {self.qty}")
 
             # Use idempotent order placement
@@ -1005,7 +1005,7 @@ class RandomScalpBot:
             if not self.entry_price or self.actual_filled_qty == 0:
                 log(f"[{STRATEGY_NAME}] [ERROR] Could not get entry details after {max_retries} retries; exit legs will retry in polling loop")
                 self.in_position = True  # Mark in position
-                self.side = 'LONG'
+                self.side = side
                 self.pending_signal = False
                 self.exit_legs_placed = False  # Will trigger retry in check_order_status
                 # Assume full quantity for safety
@@ -1017,7 +1017,7 @@ class RandomScalpBot:
             self.tp_level = self._round_to_tick(self.entry_price + self.cfg.profit_target_rupees)
             self.sl_level = self._round_to_tick(self.entry_price - self.cfg.stop_loss_rupees)
             self.in_position = True
-            self.side = 'LONG'
+            self.side = side
             self.pending_signal = False
 
             # Reset trailing state for new position
@@ -1026,7 +1026,7 @@ class RandomScalpBot:
             self.original_sl_level = self.sl_level
 
             log(f"[{STRATEGY_NAME}] ✅ ENTRY avg ₹{self.entry_price:.2f} qty {self.actual_filled_qty} | TP ₹{self.tp_level:.2f} | SL ₹{self.sl_level:.2f}")
-            log(f"[{STRATEGY_NAME}] STATE=LONG qty={self.actual_filled_qty} entry={self.entry_price:.2f} tp={self.tp_level:.2f} sl={self.sl_level:.2f}")
+            log(f"[{STRATEGY_NAME}] STATE={side} qty={self.actual_filled_qty} entry={self.entry_price:.2f} tp={self.tp_level:.2f} sl={self.sl_level:.2f}")
 
             # Place exit legs for ACTUAL filled quantity
             self.place_exit_legs_for_qty(self.actual_filled_qty)
