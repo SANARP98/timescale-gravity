@@ -175,6 +175,7 @@ class Config:
     enable_trailing_sl: bool = os.getenv("ENABLE_TRAILING_SL", "false").lower() == "true"
     trail_activation_percent: float = float(os.getenv("TRAIL_ACTIVATION_PERCENT", 50.0))  # % of target
     trail_lock_percent: float = float(os.getenv("TRAIL_LOCK_PERCENT", 75.0))  # % of profit to lock
+    sl_order_type: str = os.getenv("SL_ORDER_TYPE", "SL")  # SL or SL-M
 
     # Risk & timing
     ignore_entry_delta: bool = os.getenv("IGNORE_ENTRY_DELTA", "true").lower() == "true"
@@ -384,6 +385,7 @@ class RandomScalpBot:
         self.exit_legs_placed: bool = False
         self.exit_legs_retry_count: int = 0
         self.max_exit_legs_retries: int = 3
+        self.allow_slm: bool = self.cfg.sl_order_type.upper() in {"SL-M", "SLM"}
 
         # Threading safety
         self.exit_lock = Lock()  # OCO race condition protection
@@ -523,6 +525,7 @@ class RandomScalpBot:
             log(f"[{STRATEGY_NAME}] [ERROR] Cannot place stop order without trigger price")
             return None
 
+        original_trigger = trigger_price
         # Validate trigger price for long positions (trigger should be < LTP)
         if action == "SELL" and self.side == 'LONG':
             try:
@@ -530,31 +533,41 @@ class RandomScalpBot:
                 ltp = float(q.get('data', {}).get('ltp') or 0)
                 if ltp and trigger_price >= ltp:
                     log(f"[{STRATEGY_NAME}] [WARN] SL trigger {trigger_price:.2f} >= LTP {ltp:.2f}, adjusting to LTP - tick")
-                    trigger_price = max(self._round_to_tick(ltp - self.tick_size), 0.05)
+                    trigger_price = max(self._round_to_tick(ltp - (self.tick_size or 0.05)), 0.05)
             except Exception as e:
                 log(f"[{STRATEGY_NAME}] [WARN] Could not validate trigger vs LTP: {e}")
 
-        # Try SL-M first
-        try:
-            resp = self._safe_placeorder(
-                strategy=STRATEGY_NAME,
-                symbol=self.cfg.symbol,
-                exchange=self.cfg.exchange,
-                product=self.cfg.product,
-                action=action,
-                price_type="SL-M",
-                trigger_price=trigger_price,
-                quantity=quantity,
-            )
-            if resp and resp.get('status') == 'success':
-                log(f"[{STRATEGY_NAME}] [SL] Placed SL-M @ trigger ₹{trigger_price:.2f} for qty {quantity}")
-                return resp
-        except Exception as e:
-            log(f"[{STRATEGY_NAME}] [WARN] SL-M placement failed: {e}")
+        # Try SL-M first only if allowed
+        if self.allow_slm:
+            resp = None
+            try:
+                resp = self._safe_placeorder(
+                    strategy=STRATEGY_NAME,
+                    symbol=self.cfg.symbol,
+                    exchange=self.cfg.exchange,
+                    product=self.cfg.product,
+                    action=action,
+                    price_type="SL-M",
+                    trigger_price=trigger_price,
+                    quantity=quantity,
+                )
+                if resp and resp.get('status') == 'success':
+                    log(f"[{STRATEGY_NAME}] [SL] Placed SL-M @ trigger ₹{trigger_price:.2f} for qty {quantity}")
+                    self.sl_level = trigger_price
+                    return resp
+            except Exception as e:
+                log(f"[{STRATEGY_NAME}] [WARN] SL-M placement failed: {e}")
+
+            # If SL-M attempt failed, disable for rest of session
+            if not resp or resp.get('status') != 'success':
+                if self.allow_slm:
+                    log(f"[{STRATEGY_NAME}] [INFO] Disabling SL-M orders after broker rejection")
+                self.allow_slm = False
 
         # Fallback to SL (with limit price)
         log(f"[{STRATEGY_NAME}] [FALLBACK] Retrying with SL instead of SL-M")
-        fallback_price = max(self._round_to_tick(trigger_price - self.tick_size), 0.05)
+        tick = self.tick_size or 0.05
+        fallback_price = max(self._round_to_tick(trigger_price - tick), 0.05)
         try:
             resp = self._safe_placeorder(
                 strategy=STRATEGY_NAME,
@@ -569,6 +582,7 @@ class RandomScalpBot:
             )
             if resp and resp.get('status') == 'success':
                 log(f"[{STRATEGY_NAME}] [SL] Placed SL @ price ₹{fallback_price:.2f} trigger ₹{trigger_price:.2f} for qty {quantity}")
+                self.sl_level = trigger_price
                 return resp
         except Exception as e:
             log(f"[{STRATEGY_NAME}] [ERROR] SL fallback also failed: {e}")
@@ -797,9 +811,13 @@ class RandomScalpBot:
 
     def check_order_status(self):
         """Poll sibling orders to implement OCO safety with race condition protection and partial fill handling."""
+        start_ts = time.perf_counter()
         # When flat, just ensure we don't have stale exits and return
         if not self.in_position:
             self._cleanup_stale_orders()
+            elapsed = time.perf_counter() - start_ts
+            if elapsed > 4.0:
+                log(f"[{STRATEGY_NAME}] [PERF] check_order_status idle path took {elapsed:.2f}s")
             return
 
         # If in position but exits are missing, retry placing them
@@ -811,6 +829,9 @@ class RandomScalpBot:
 
         # Use lock to prevent race condition where both TP and SL get processed simultaneously
         if not self.exit_lock.acquire(blocking=False):
+            elapsed = time.perf_counter() - start_ts
+            if elapsed > 4.0:
+                log(f"[{STRATEGY_NAME}] [PERF] check_order_status skipped due to lock after {elapsed:.2f}s")
             return  # Another check is already processing, skip this cycle
 
         try:
@@ -918,6 +939,9 @@ class RandomScalpBot:
                     log(f"[{STRATEGY_NAME}] [WARN] Market-on-target check failed: {e}")
         finally:
             self.exit_lock.release()
+            elapsed = time.perf_counter() - start_ts
+            if elapsed > 4.0:
+                log(f"[{STRATEGY_NAME}] [PERF] check_order_status took {elapsed:.2f}s")
 
     def _update_trailing_stop(self):
         """
@@ -1374,7 +1398,7 @@ class RandomScalpBot:
             self.scheduler.add_job(self.square_off, CronTrigger(hour=h, minute=m, second="0", timezone=IST))
 
         # OCO safety polling
-        self.scheduler.add_job(self.check_order_status, 'interval', seconds=5, max_instances=1)
+        self.scheduler.add_job(self.check_order_status, 'interval', seconds=5, max_instances=2)
 
         # Position reconciliation (every 30 seconds)
         self.scheduler.add_job(self.reconcile_position, 'interval', seconds=30, max_instances=1)
