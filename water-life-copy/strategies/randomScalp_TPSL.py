@@ -25,6 +25,7 @@ from dataclasses import dataclass, asdict
 from typing import Optional, Tuple, Dict, Any
 from datetime import datetime, time as dtime, timedelta
 from threading import Lock, RLock
+from collections import deque
 
 import pytz
 import pandas as pd
@@ -397,6 +398,10 @@ class RandomScalpBot:
         # Track broker order sweeps to avoid spamming APIs when flat
         self.last_order_sweep_ts: float = 0.0
 
+        # Broker postback tracking
+        self.postback_events = deque(maxlen=50)
+        self.last_postback_received: Optional[datetime] = None
+
         self.last_entry_order_id: Optional[str] = None
 
         # Trailing Stop Loss state
@@ -630,6 +635,70 @@ class RandomScalpBot:
 
         log(f"[{STRATEGY_NAME}] [WARN] Could not confirm cancellation for oid={order_id}{reason_text}")
         return False
+
+    def handle_postback(self, payload: Dict[str, Any]) -> None:
+        """Receive broker postback/webhook payloads and trigger fast reconciliation."""
+        if not payload:
+            log(f"[{STRATEGY_NAME}] [POSTBACK] Empty payload received; ignoring")
+            return
+
+        try:
+            order_id = str(
+                payload.get('orderid')
+                or payload.get('order_id')
+                or payload.get('client_order_id')
+                or payload.get('id')
+                or ""
+            ).strip()
+        except Exception:
+            order_id = ""
+
+        status = self._normalize_status(
+            payload.get('order_status')
+            or payload.get('status')
+            or payload.get('orderStatus')
+        )
+        filled_qty = payload.get('filled_quantity') or payload.get('filled_qty') or payload.get('filledQuantity')
+        avg_price = payload.get('average_price') or payload.get('avg_price') or payload.get('averagePrice')
+
+        snapshot = {
+            "ts": now_ist().isoformat(),
+            "order_id": order_id or None,
+            "status": status or None,
+            "filled_quantity": filled_qty,
+            "average_price": avg_price,
+        }
+        self.postback_events.appendleft(snapshot)
+        self.last_postback_received = now_ist()
+
+        log(f"[{STRATEGY_NAME}] [POSTBACK] oid={order_id or 'UNKNOWN'} status={status or 'UNKNOWN'} filled={filled_qty} avg={avg_price}")
+
+        threading.Thread(
+            target=self._process_postback_async,
+            args=(order_id, status),
+            daemon=True,
+        ).start()
+
+    def _process_postback_async(self, order_id: Optional[str], status: Optional[str]) -> None:
+        """Run reconciliation work following a broker postback on a background thread."""
+        try:
+            self.check_order_status()
+        except Exception as exc:
+            log(f"[{STRATEGY_NAME}] [POSTBACK] check_order_status error: {exc}")
+
+        try:
+            should_reconcile = self.in_position or (
+                order_id and order_id in {self.entry_order_id, self.tp_order_id, self.sl_order_id}
+            )
+            if not should_reconcile and status and self._is_order_closed_status(status):
+                should_reconcile = True
+
+            if should_reconcile:
+                self.reconcile_position()
+        except Exception as exc:
+            log(f"[{STRATEGY_NAME}] [POSTBACK] reconcile_position error: {exc}")
+
+        self._persist()
 
     def _place_stop_order(self, quantity: int, trigger_price: float, action: str = "SELL") -> Optional[Dict[str, Any]]:
         """Place stop loss with SL-M → SL fallback and trigger validation."""

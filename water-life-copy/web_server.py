@@ -205,13 +205,33 @@ class BotManager:
                         with self.lock:
                             self.is_running = False
                             self.bot = None
-                        socketio.emit('log', {
-                            'timestamp': datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S'),
-                            'level': 'ERROR',
-                            'message': '❌ Bot thread crashed! Please check logs and restart.'
-                        }, namespace='/')
+                socketio.emit('log', {
+                    'timestamp': datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S'),
+                    'level': 'ERROR',
+                    'message': '❌ Bot thread crashed! Please check logs and restart.'
+                }, namespace='/')
             except Exception as e:
                 logging.error(f"[HEALTH] Health check error: {e}")
+
+    def handle_postback(self, payload: Dict[str, Any]) -> None:
+        """Forward broker postback payloads to the active bot."""
+        # Snapshot state without holding the lock while invoking bot handlers
+        with self.lock:
+            bot = self.bot
+            running = self.is_running
+        if not running or bot is None:
+            raise RuntimeError("Bot is not running; cannot accept postbacks.")
+
+        handler = getattr(bot, "handle_postback", None)
+        if not callable(handler):
+            raise AttributeError("Current strategy does not support broker postbacks.")
+
+        # Ensure we pass a shallow copy to avoid accidental mutation
+        payload_copy = dict(payload)
+        handler(payload_copy)
+
+        # Refresh stats after processing
+        self.update_stats()
 
 bot_manager = BotManager()
 
@@ -388,6 +408,37 @@ def start_bot():
             bot_manager.is_running = False
             bot_manager.bot = None
             return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/postback', methods=['POST'])
+def receive_postback():
+    """Receive broker postback/webhook updates and forward to the active strategy."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'success': False, 'error': 'Invalid JSON payload'}), 400
+
+    try:
+        bot_manager.handle_postback(data)
+        socketio.emit(
+            'postback_event',
+            {
+                'timestamp': datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S'),
+                'payload': data,
+            },
+            namespace='/',
+        )
+        try:
+            serialized = json.dumps(data)
+        except Exception:
+            serialized = str(data)
+        custom_print(f"[POSTBACK] Received order update: {serialized[:500]}")
+        return jsonify({'success': True})
+    except RuntimeError as err:
+        return jsonify({'success': False, 'error': str(err)}), 409
+    except AttributeError as err:
+        return jsonify({'success': False, 'error': str(err)}), 501
+    except Exception as err:
+        logging.exception("Postback handling failed")
+        return jsonify({'success': False, 'error': str(err)}), 500
 
 @app.route('/api/stop', methods=['POST'])
 def stop_bot():
@@ -611,6 +662,14 @@ class PaperTradingBot:
 
         # Start the wrapped bot
         self.bot.start()
+
+    def handle_postback(self, payload: Dict[str, Any]) -> None:
+        """Forward postbacks to the wrapped bot when available (for consistency)."""
+        handler = getattr(self.bot, "handle_postback", None)
+        if callable(handler):
+            handler(dict(payload))
+        else:
+            custom_print(f"[PAPER] Postback ignored (no handler): {payload}")
 
 # ==================== WebSocket Events ====================
 
