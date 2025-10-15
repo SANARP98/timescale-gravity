@@ -11,7 +11,7 @@ import json
 import logging
 from datetime import datetime
 from threading import Thread, Lock
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from collections import deque
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
@@ -205,11 +205,15 @@ class BotManager:
                         with self.lock:
                             self.is_running = False
                             self.bot = None
-                socketio.emit('log', {
-                    'timestamp': datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S'),
-                    'level': 'ERROR',
-                    'message': '❌ Bot thread crashed! Please check logs and restart.'
-                }, namespace='/')
+                        socketio.emit(
+                            'log',
+                            {
+                                'timestamp': datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S'),
+                                'level': 'ERROR',
+                                'message': '❌ Bot thread crashed! Please check logs and restart.'
+                            },
+                            namespace='/'
+                        )
             except Exception as e:
                 logging.error(f"[HEALTH] Health check error: {e}")
 
